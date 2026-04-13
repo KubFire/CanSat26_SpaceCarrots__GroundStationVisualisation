@@ -1,5 +1,5 @@
 #Developement branch - visualising simulated data from test_lora_log.txt
-#V1.1.3
+#V1.1.32
 #Stable - funguje mapa, funguje vizualizace, na KubFire LowPC to beha krasnych 63ms
 """
 WHATS IMPLEMENTED?
@@ -51,7 +51,7 @@ START_TIME = time.time()
 # --- GPS & SCALE ---
 ground_lat, ground_lon = 49.7950, 16.6800 
 target_lat, target_lon = 49.7985833, 16.6877778
-map_scale = 0.04
+map_scale = 0.02# cim vetsi, tim mensi zoom
 
 def data_reader_worker(data_queue, port, baud):
     sensor_map = {
