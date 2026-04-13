@@ -1,5 +1,5 @@
 # Ignorování složek s objemnými daty
-map_data/
+map_tiles/
 data/
 
 # Ignorování doèasných souborù Pythonu
