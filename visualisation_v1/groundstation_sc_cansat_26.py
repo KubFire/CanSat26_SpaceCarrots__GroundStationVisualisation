@@ -7,6 +7,7 @@ WHATS IMPLEMENTED?
     Optimalizace - beha rychle
     TSLP - time since last packet
     Windows resizing funguje
+    Horni Bar je usporadany a zobrazuje vsechny values.
 
 ----------------------------------
 
@@ -163,37 +164,63 @@ class MapWidget(FigureCanvas):
 class GroundStation(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CanSat Ground Station V1.1.0")
-        self.data = {k: [] for k in ['RSSI', 'SNR', 'TEMP', 'ALT', 'LAT', 'LON', 'D_LAT', 'U_LAT']}
+        self.setWindowTitle("CanSat Ground Station V1.1.1")
+        
+        # Added HUM, PRESS
+        self.data = {k: [] for k in ['RSSI', 'SNR', 'TEMP', 'ALT', 'LAT', 'LON', 'D_LAT', 'U_LAT', 'HUM', 'PRESS']}
+        
         self.main_widget = QtWidgets.QWidget()
         self.setCentralWidget(self.main_widget)
         self.layout = QtWidgets.QVBoxLayout(self.main_widget)
-        self.top_panel = QtWidgets.QHBoxLayout()
-        font = QtGui.QFont(); font.setPointSize(16)
-        self.lbls = {k: QtWidgets.QLabel(f"{k}: --") for k in ['Real T', 'ALT', 'Dist', 'TSLP', 'UI Frame']}
-        for lbl in self.lbls.values(): 
+        
+        # --- TOP DATA BARS ---
+        self.top_container = QtWidgets.QVBoxLayout()
+        self.row1_layout = QtWidgets.QHBoxLayout()
+        self.row2_layout = QtWidgets.QHBoxLayout()
+        
+        font = QtGui.QFont()
+        font.setPointSize(16)
+        
+        self.lbls = {}
+        row1_keys = ['Real T', 'Packet T', 'TSLP', 'UI Frame', 'RSSI', 'SNR']
+        row2_keys = ['Alt', 'Lng', 'Lat', 'Dist', 'Temp', 'Hum', 'Pressure']
+        
+        for k in row1_keys:
+            lbl = QtWidgets.QLabel(f"{k}: --")
             lbl.setFont(font)
-            self.top_panel.addWidget(lbl)
-        self.layout.addLayout(self.top_panel)
+            self.lbls[k] = lbl
+            self.row1_layout.addWidget(lbl)
+            
+        for k in row2_keys:
+            lbl = QtWidgets.QLabel(f"{k}: --")
+            lbl.setFont(font)
+            self.lbls[k] = lbl
+            self.row2_layout.addWidget(lbl)
+            
+        self.lbls['Packet T'].setText("Packet T: <font color='red'>N/A</font>")
         
+        self.top_container.addLayout(self.row1_layout)
+        self.top_container.addLayout(self.row2_layout)
+        self.layout.addLayout(self.top_container)
+        
+        # --- CONTENT LAYOUT ---
         self.content = QtWidgets.QHBoxLayout()
-        
-        # Wrapped in a container layout
         self.left_panel = QtWidgets.QVBoxLayout()
         
-        # --- WIDGET TOGGLE SYSTEM ---
         self.toggle_layout = QtWidgets.QHBoxLayout()
         self.left_panel.addLayout(self.toggle_layout)
         
         self.graph_stack = QtWidgets.QVBoxLayout()
-        self.left_panel.addLayout(self.graph_stack)
+        # EXPLICIT STRETCH 1 added here so the stack expands when items hide
+        self.left_panel.addLayout(self.graph_stack, stretch=1) 
         
         self.plots = {}
         self.graph_widgets = {}
         
-        for name, key, color in [('TEMP', 'TEMP', 'r'), ('ALT', 'ALT', 'b'), ('TSLP', 'TSLP', 'y'), ('UI Latency', 'UI', 'm')]:
+        for name, key, color in [('Temp', 'TEMP', 'r'), ('Alt', 'ALT', 'b'), ('TSLP', 'TSLP', 'y'), ('UI Latency', 'UI', 'm')]:
             pw = pg.PlotWidget(title=name)
-            pw.setMinimumHeight(120) 
+            # Reduced minimum height so they don't break layout limits, stretch handles the visual fill
+            pw.setMinimumHeight(150) 
             self.plots[key] = pw.plot(pen=color)
             self.graph_widgets[key] = pw
             self.graph_stack.addWidget(pw)
@@ -204,7 +231,6 @@ class GroundStation(QtWidgets.QMainWindow):
             self.toggle_layout.addWidget(chk)
         
         self.toggle_layout.addStretch() 
-        self.left_panel.addStretch() 
         
         self.map_widget = MapWidget()
         self.content.addLayout(self.left_panel, stretch=1)
@@ -223,16 +249,21 @@ class GroundStation(QtWidgets.QMainWindow):
         self.lbls['Real T'].setText(f"Real T: {int(now*1000)%100000:05d}")
         self.lbls['UI Frame'].setText(f"UI Frame: {ui_ms:.0f} ms")
 
-        if ui_ms < 500:
+        # Filtrace úvodního lagu pro UI graf, omezeno z obou stran
+        if 0 <= ui_ms < 500:
             self.data['U_LAT'].append(ui_ms)
 
         updated = False
         while not q.empty():
             d = q.get()
-            for k in ['TEMP', 'ALT', 'LAT', 'LON']: self.data[k].append(d[k])
+            for k in ['TEMP', 'ALT', 'LAT', 'LON', 'RSSI', 'SNR', 'PRESS']: 
+                self.data[k].append(d[k])
+            self.data['HUM'].append(d.get('HUM', 0.0))
+            
             tslp_ms = (now - d['time']) * 1000
             
-            if tslp_ms < 1000:
+            # Filtrace úvodního lagu a nesmyslných záporných hodnot pro TSLP graf
+            if 0 <= tslp_ms < 1000:
                 self.data['D_LAT'].append(tslp_ms)
             if d['LAT'] != 0:
                 self.map_widget.update_position(d['LAT'], d['LON'])
@@ -251,9 +282,17 @@ class GroundStation(QtWidgets.QMainWindow):
         if self.data['U_LAT']:
             self.plots['UI'].setData(self.data['U_LAT'])
         
+        # --- UPDATE LABELS ---
         dist = round(haversine((self.data['LAT'][-1], self.data['LON'][-1]), (target_lat, target_lon))*1000, 1)
         self.lbls['Dist'].setText(f"Dist: {dist}m")
-        self.lbls['ALT'].setText(f"ALT: {self.data['ALT'][-1]} m")
+        self.lbls['Alt'].setText(f"Alt: {self.data['ALT'][-1]} m")
+        self.lbls['Lng'].setText(f"Lng: {self.data['LON'][-1]:.5f}")
+        self.lbls['Lat'].setText(f"Lat: {self.data['LAT'][-1]:.5f}")
+        self.lbls['Temp'].setText(f"Temp: {self.data['TEMP'][-1]} °C")
+        self.lbls['Hum'].setText(f"Hum: {self.data['HUM'][-1]} %")
+        self.lbls['Pressure'].setText(f"Pressure: {self.data['PRESS'][-1]} hPa")
+        self.lbls['RSSI'].setText(f"RSSI: {self.data['RSSI'][-1]}")
+        self.lbls['SNR'].setText(f"SNR: {self.data['SNR'][-1]}")
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
