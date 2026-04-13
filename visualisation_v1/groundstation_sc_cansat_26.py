@@ -1,14 +1,19 @@
 #Developement branch - visualising simulated data from test_lora_log.txt
-#V1.1.4 Stable
+#V1.1.5
 #Stable - funguje mapa, funguje vizualizace, na KubFire LowPC to beha krasnych 63ms
 """
 WHATS IMPLEMENTED?
     Offline mapy - prvni checkne jestli je ma offline, pokud ne, stahuje je z netu
-    Optimalizace - beha rychle (Blitting fixed)
-    GTSLP - ground time since last packet
-    PTSLP - packet time since last packet
-    Auto-Sync Drift - graf a bar se stabilizací <55ms
-    Map 1:1 adaptive aspect ratio
+    Optimalizace - beha rychle (Blitting ghosting fixed)
+    Ground Cycle Δ - ground time since last packet
+    CanSat Cycle Δ - interval mezi pakety z pohledu Arduina (vlastní hodnota i graf)
+    Drift - rozdil casu Arduino vs PC + Graf
+    Map 1:1 adaptive aspect ratio (No scale bar, Zoom 0.02)
+    Upkeep - premenovany Packet T
+    MSPF - UI Frame (millisecperframe)
+
+TO DO
+    Sliding Window    
 """
 import queue
 import sys
@@ -89,11 +94,8 @@ class MapWidget(FigureCanvas):
         aspect = 1 / np.cos(np.radians(self.ground_pos[1]))
         self.axes.set_aspect(aspect, adjustable='datalim')
         
-        # Ground Station (Black)
         self.ground_dot, = self.axes.plot([self.ground_pos[0]], [self.ground_pos[1]], 'o', color='#000000', markersize=10, zorder=10, animated=True)
-        # CanSat current position (Orange)
         self.cansat_dot, = self.axes.plot([], [], 'o', color='#EA5A0C', markersize=10, zorder=11, animated=True)
-        # Path (Orange Line, NO markers to avoid "double circles")
         self.path_line, = self.axes.plot([], [], '-', color='#EA5A0C', alpha=0.6, linewidth=2, zorder=5, animated=True)
         
         self.mpl_connect('draw_event', self.on_draw)
@@ -101,8 +103,7 @@ class MapWidget(FigureCanvas):
         self.fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
     def on_draw(self, event):
-        if event is not None:
-            self.bg_cache = self.copy_from_bbox(self.axes.bbox)
+        self.bg_cache = self.copy_from_bbox(self.axes.bbox)
         self.axes.draw_artist(self.path_line)
         self.axes.draw_artist(self.ground_dot)
         self.axes.draw_artist(self.cansat_dot)
@@ -120,6 +121,9 @@ class MapWidget(FigureCanvas):
         self.axes.set_xlim(self.ground_pos[0] - new_scale_lon, self.ground_pos[0] + new_scale_lon)
         self.axes.set_ylim(self.ground_pos[1] - new_scale_lat, self.ground_pos[1] + new_scale_lat)
         
+        self.path_line.set_visible(False)
+        self.cansat_dot.set_visible(False)
+
         try:
             self.axes.images = []
             cx.add_basemap(self.axes, crs='EPSG:4326', source=TILES_PATH)
@@ -129,10 +133,13 @@ class MapWidget(FigureCanvas):
             
         self.draw()
         QtWidgets.QApplication.processEvents()
+        
+        self.path_line.set_visible(True)
+        self.cansat_dot.set_visible(True)
         self.bg_cache = self.copy_from_bbox(self.axes.bbox)
 
     def update_position(self, lat, lon):
-        if lat == 0 or lon == 0: return # Skip invalid coordinates often sent on reset
+        if lat == 0 or lon == 0: return 
         self.path_lons.append(lon); self.path_lats.append(lat)
         self.path_line.set_data(self.path_lons[-300:], self.path_lats[-300:])
         self.cansat_dot.set_data([lon], [lat])
@@ -153,10 +160,13 @@ class MapWidget(FigureCanvas):
 class GroundStation(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CanSat Ground Station V1.1.4")
-        self.setStyleSheet("QCheckBox::indicator { width: 14px; height: 14px; background-color: transparent; border: 1px solid #777; border-radius: 3px; } QCheckBox::indicator:checked { background-color: #EA5A0C; border: 1px solid #EA5A0C; image: url(\"data:image/svg+xml;utf8,<svg width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='4' stroke-linecap='round' stroke-linejoin='round' xmlns='http://www.w3.org/2000/svg'><polyline points='20 6 9 17 4 12'/></svg>\"); }")
+        self.setWindowTitle("CanSat Ground Station V1.1.5")
+        self.setStyleSheet("""
+            QCheckBox::indicator { width: 14px; height: 14px; background-color: transparent; border: 1px solid #777; border-radius: 3px; } 
+            QCheckBox::indicator:checked { background-color: #EA5A0C; border: 1px solid #EA5A0C; image: url("data:image/svg+xml;utf8,<svg width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='4' stroke-linecap='round' stroke-linejoin='round' xmlns='http://www.w3.org/2000/svg'><polyline points='20 6 9 17 4 12'/></svg>"); }
+        """)
         
-        self.data = {k: [] for k in ['RSSI', 'SNR', 'TEMP', 'ALT', 'LAT', 'LON', 'GTSLP', 'U_LAT', 'HUM', 'PRESS', 'DIST', 'MILLIS', 'V_SPEED', 'DRIFT', 'PTSLP']}
+        self.data = {k: [] for k in ['RSSI', 'SNR', 'TEMP', 'ALT', 'LAT', 'LON', 'GTSLP', 'U_LAT', 'HUM', 'PRESS', 'DIST', 'MILLIS', 'V_SPEED', 'DRIFT', 'CAN_DELTA']}
         self.sync_offset = 0 
         self.last_millis = 0
         self.start_time_pc = time.time()
@@ -172,13 +182,16 @@ class GroundStation(QtWidgets.QMainWindow):
 
         self.row1, self.row2 = QtWidgets.QHBoxLayout(), QtWidgets.QHBoxLayout()
         font = QtGui.QFont("Arial", 16)
-        self.lbls = {k: QtWidgets.QLabel(f"{k}: --") for k in ['World T', 'Drift', 'Packet T', 'GTSLP', 'UI Frame', 'RSSI', 'SNR', 'Alt', 'V_Speed', 'Lng', 'Lat', 'Dist', 'Temp', 'Hum', 'Pressure']}
         
-        colors = {'GTSLP': '#FFD700', 'UI Frame': '#FF00FF', 'RSSI': '#00FFFF', 'SNR': '#FFFFFF', 'Dist': '#9370DB', 'V_Speed': '#00FA9A', 'Alt': '#1E90FF', 'Temp': '#FF6A6A', 'Hum': '#FFA500', 'Pressure': '#98FB98', 'Drift': '#FF4500'}
+        # Pridan CanSat Cycle Δ do horni listy
+        self.lbls = {k: QtWidgets.QLabel(f"{k}: --") for k in ['World T', 'Drift', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'MSPF', 'RSSI', 'SNR', 'Alt', 'V_Speed', 'Lng', 'Lat', 'Dist', 'Temp', 'Hum', 'Pressure']}
+        
+        colors = {'Ground Cycle Δ': '#FFD700', 'MSPF': '#FF00FF', 'RSSI': '#00FFFF', 'SNR': '#FFFFFF', 'Dist': '#9370DB', 'V_Speed': '#00FA9A', 'Alt': '#1E90FF', 'Temp': '#FF6A6A', 'Hum': '#FFA500', 'Pressure': '#98FB98', 'Drift': '#FF4500', 'CanSat Cycle Δ': '#FF6347'}
+        
         for k, lbl in self.lbls.items():
             lbl.setFont(font)
             if k in colors: lbl.setStyleSheet(f"color: {colors[k]};")
-            (self.row1 if k in ['World T', 'Drift', 'Packet T', 'GTSLP', 'UI Frame', 'RSSI', 'SNR'] else self.row2).addWidget(lbl)
+            (self.row1 if k in ['World T', 'Drift', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'MSPF', 'RSSI', 'SNR'] else self.row2).addWidget(lbl)
         
         self.layout.addLayout(self.row1); self.layout.addLayout(self.row2)
 
@@ -188,9 +201,23 @@ class GroundStation(QtWidgets.QMainWindow):
         self.graph_stack = QtWidgets.QVBoxLayout()
         
         self.plots = {}
-        graph_configs = [('GTSLP', 'GTSLP', colors['GTSLP']), ('UI Latency', 'U_LAT', colors['UI Frame']), ('RSSI', 'RSSI', colors['RSSI']), ('SNR', 'SNR', colors['SNR']), ('Drift', 'DRIFT', colors['Drift']), ('PTSLP', 'PTSLP', '#FF6347'), ('Distance', 'DIST', colors['Dist']), ('V_Speed', 'V_SPEED', colors['V_Speed']), ('Alt', 'ALT', colors['Alt']), ('Temp', 'TEMP', colors['Temp']), ('Humidity', 'HUM', colors['Hum']), ('Pressure', 'PRESS', colors['Pressure'])]
+        # Upraveno poradí: Ground Cycle Δ je mezi CanSat Cycle Δ a Distance
+        graph_configs = [
+            ('CanSat Cycle Δ', 'CAN_DELTA', colors['CanSat Cycle Δ']), 
+            ('Ground Cycle Δ', 'GTSLP', colors['Ground Cycle Δ']), 
+            ('MSPF', 'U_LAT', colors['MSPF']), 
+            ('RSSI', 'RSSI', colors['RSSI']), 
+            ('SNR', 'SNR', colors['SNR']), 
+            ('Drift', 'DRIFT', colors['Drift']), 
+            ('Distance', 'DIST', colors['Dist']), 
+            ('V_Speed', 'V_SPEED', colors['V_Speed']), 
+            ('Alt', 'ALT', colors['Alt']), 
+            ('Temp', 'TEMP', colors['Temp']), 
+            ('Humidity', 'HUM', colors['Hum']), 
+            ('Pressure', 'PRESS', colors['Pressure'])
+        ]
         
-        start_visible_keys = {'U_LAT', 'DIST', 'V_SPEED', 'ALT', 'DRIFT', 'PTSLP'}
+        start_visible_keys = {'U_LAT', 'DIST', 'V_SPEED', 'ALT', 'DRIFT', 'CAN_DELTA'}
         for i, (name, key, col) in enumerate(graph_configs):
             pw = pg.PlotWidget(title=name)
             pw.setMinimumHeight(60)
@@ -203,13 +230,19 @@ class GroundStation(QtWidgets.QMainWindow):
             self.toggle_row.addWidget(chk)
 
         self.msg_log = QtWidgets.QTextEdit()
-        self.msg_log.setReadOnly(True); self.msg_log.setMaximumHeight(80); self.msg_log.setStyleSheet("background:#121212; color:#EA5A0C; font-family:monospace;"); self.msg_log.setVisible(True)
+        self.msg_log.setReadOnly(True)
+        # Box Error+Msg je nyni dvakrat vyssi (160 misto 80)
+        self.msg_log.setMaximumHeight(160) 
+        self.msg_log.setStyleSheet("background:#121212; color:#EA5A0C; font-family:monospace;")
+        self.msg_log.setVisible(True)
         self.graph_stack.addWidget(self.msg_log)
         chk_err = QtWidgets.QCheckBox("Error+Msg"); chk_err.setChecked(True); chk_err.toggled.connect(self.msg_log.setVisible); self.toggle_row.addWidget(chk_err)
         
         self.toggle_row.addStretch()
-        self.btn_sync = QtWidgets.QPushButton("Sync T")
-        self.btn_sync.setFixedSize(40, 40); self.btn_sync.setStyleSheet("background:#FF2222; color:#FFF; font-weight:bold; border-radius:4px;")
+        
+        self.btn_sync = QtWidgets.QPushButton("Sync Drift")
+        self.btn_sync.setFixedSize(80, 40)
+        self.btn_sync.setStyleSheet("background:#FF2222; color:#FFF; font-weight:bold; border-radius:4px;")
         self.btn_sync.clicked.connect(self.do_sync)
         self.toggle_row.addWidget(self.btn_sync)
 
@@ -232,7 +265,7 @@ class GroundStation(QtWidgets.QMainWindow):
         self.last_ui_t = now
         self.lbls['World T'].setText(time.strftime("Time: %H:%M:%S"))
         real_ms = int((now - self.start_time_pc) * 1000)
-        self.lbls['UI Frame'].setText(f"UI Frame: {ui_ms:.0f} ms")
+        self.lbls['MSPF'].setText(f"MSPF: {ui_ms:.0f} ms")
         if 0 <= ui_ms < 500: self.data['U_LAT'].append(ui_ms)
 
         while not q.empty():
@@ -242,13 +275,6 @@ class GroundStation(QtWidgets.QMainWindow):
             
             curr_m = d.get('MILLIS', 0)
             
-            # Reset detection: If Arduino MILLIS drops significantly, auto-adjust offset
-            if curr_m < self.last_millis - 1000:
-                self.sync_offset += (self.last_millis) 
-                self.msg_log.append("Arduino Reset detected. Auto-Syncing drift.")
-                # Clear path on reset to avoid "jump lines" across the map
-                self.map_w.path_lons = []; self.map_w.path_lats = []
-
             for k in ['TEMP', 'ALT', 'LAT', 'LON', 'RSSI', 'SNR', 'PRESS', 'MILLIS', 'V_SPEED']:
                 self.data[k].append(d.get(k, 0.0))
             self.data['HUM'].append(d.get('HUM', 0.0))
@@ -256,9 +282,12 @@ class GroundStation(QtWidgets.QMainWindow):
             gtslp = (now - d['time']) * 1000
             if 0 <= gtslp < 1000: self.data['GTSLP'].append(gtslp)
             
-            ptslp = int(curr_m - self.last_millis) if curr_m > self.last_millis else 0
-            self.data['PTSLP'].append(ptslp)
-            self.lbls['Packet T'].setText(f"Packet T: {int(curr_m)//1000} {int(curr_m)%1000:03d} (PTSLP {ptslp}ms)")
+            can_delta = int(curr_m - self.last_millis) if self.last_millis != 0 else 0
+            self.data['CAN_DELTA'].append(can_delta)
+            
+            # Samostatne hodnoty v liste
+            self.lbls['Upkeep'].setText(f"Upkeep: {int(curr_m)//1000} {int(curr_m)%1000:03d}")
+            self.lbls['CanSat Cycle Δ'].setText(f"CanSat Cycle Δ: {can_delta} ms")
             
             drift = int((real_ms - self.sync_offset) - curr_m)
             self.data['DRIFT'].append(drift)
@@ -273,10 +302,10 @@ class GroundStation(QtWidgets.QMainWindow):
 
         if not self.data['ALT']: return
         for k in self.data: self.data[k] = self.data[k][-300:]
-        for k in ['TEMP', 'ALT', 'RSSI', 'SNR', 'HUM', 'PRESS', 'DIST', 'V_SPEED', 'GTSLP', 'U_LAT', 'DRIFT', 'PTSLP']:
+        for k in ['TEMP', 'ALT', 'RSSI', 'SNR', 'HUM', 'PRESS', 'DIST', 'V_SPEED', 'GTSLP', 'U_LAT', 'DRIFT', 'CAN_DELTA']:
             if self.data[k]: self.plots[k].setData(self.data[k])
         
-        if self.data['GTSLP']: self.lbls['GTSLP'].setText(f"GTSLP: {self.data['GTSLP'][-1]:.0f} ms")
+        if self.data['GTSLP']: self.lbls['Ground Cycle Δ'].setText(f"Ground Cycle Δ: {self.data['GTSLP'][-1]:.0f} ms")
         vals = {'Dist': f"{self.data['DIST'][-1]} m", 'V_Speed': f"{self.data['V_SPEED'][-1]} m/s", 'Alt': f"{self.data['ALT'][-1]} m", 'Lng': f"{self.data['LON'][-1]:.5f}", 'Lat': f"{self.data['LAT'][-1]:.5f}", 'Temp': f"{self.data['TEMP'][-1]} °C", 'Hum': f"{self.data['HUM'][-1]} %", 'Pressure': f"{self.data['PRESS'][-1]} hPa", 'RSSI': f"{self.data['RSSI'][-1]} dBm", 'SNR': f"{self.data['SNR'][-1]} dB"}
         for k, v in vals.items(): self.lbls[k].setText(f"{k}: {v}")
 
