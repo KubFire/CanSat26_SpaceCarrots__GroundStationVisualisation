@@ -1,11 +1,12 @@
 #Developement branch - visualising simulated data from test_lora_log.txt
-#V1.1.0
+#V1.1.1
 #Stable - funguje mapa, funguje vizualizace, na KubFire LowPC to beha krasnych 63ms
 """
 WHATS IMPLEMENTED?
     Offline mapy - prvni checkne jestli je ma offline, pokud ne, stahuje je z netu
     Optimalizace - beha rychle
     TSLP - time since last packet
+    Windows resizing funguje
 
 ----------------------------------
 
@@ -84,16 +85,34 @@ class MapWidget(FigureCanvas):
         self.bg_cache = None
         self.setup_plot()
         
+        # Debounce timer for resizing
+        self.resize_timer = QtCore.QTimer()
+        self.resize_timer.setSingleShot(True)
+        self.resize_timer.timeout.connect(self.on_resize_timeout)
+        
     def setup_plot(self):
         self.fig.patch.set_facecolor('#121212')
         self.axes.set_facecolor('#121212')
         self.axes.set_axis_off() 
         self.axes.set_aspect('equal', adjustable='box')
-        self.render_full_map()
+        
+        # Create animated artists first
         self.ground_dot, = self.axes.plot([self.ground_pos[0]], [self.ground_pos[1]], 'o', color='#FF69B4', markersize=10, zorder=10, animated=True)
         self.cansat_dot, = self.axes.plot([], [], 'o', color='#FFA500', markersize=10, zorder=11, animated=True)
         self.path_line, = self.axes.plot([], [], color='#FFA500', alpha=0.6, linewidth=2, zorder=5, animated=True)
+        
+        # Hook into standard drawing events to protect animated elements
+        self.mpl_connect('draw_event', self.on_draw)
+        
+        self.render_full_map()
         self.fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+
+    def on_draw(self, event):
+        # Always recapture the background when a native full draw occurs, then paint the animated layers
+        self.bg_cache = self.copy_from_bbox(self.axes.bbox)
+        self.axes.draw_artist(self.path_line)
+        self.axes.draw_artist(self.ground_dot)
+        self.axes.draw_artist(self.cansat_dot)
 
     def render_full_map(self):
         self.axes.set_xlim(self.ground_pos[0] - self.current_scale, self.ground_pos[0] + self.current_scale)
@@ -105,7 +124,6 @@ class MapWidget(FigureCanvas):
             try: cx.add_basemap(self.axes, crs='EPSG:4326', source=cx.providers.OpenStreetMap.Mapnik)
             except: pass
         self.draw()
-        self.bg_cache = self.copy_from_bbox(self.axes.bbox)
 
     def check_watchdog(self, lat, lon):
         xmin, xmax = self.axes.get_xlim()
@@ -124,11 +142,21 @@ class MapWidget(FigureCanvas):
             self.path_lats.append(lat)
             self.path_line.set_data(self.path_lons[-300:], self.path_lats[-300:])
             self.cansat_dot.set_data([lon], [lat])
-            self.restore_region(self.bg_cache)
-            self.axes.draw_artist(self.path_line)
-            self.axes.draw_artist(self.ground_dot)
-            self.axes.draw_artist(self.cansat_dot)
-            self.blit(self.axes.bbox)
+            
+            if self.bg_cache is not None:
+                self.restore_region(self.bg_cache)
+                self.axes.draw_artist(self.path_line)
+                self.axes.draw_artist(self.ground_dot)
+                self.axes.draw_artist(self.cansat_dot)
+                self.blit(self.axes.bbox)
+            
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.resize_timer.start(400)
+
+    def on_resize_timeout(self):
+        # Just triggering the full map render handles the internal repainting via draw_event
+        self.render_full_map()
 
 #------------------------------------UI-----------------------
 
@@ -147,18 +175,42 @@ class GroundStation(QtWidgets.QMainWindow):
             lbl.setFont(font)
             self.top_panel.addWidget(lbl)
         self.layout.addLayout(self.top_panel)
+        
         self.content = QtWidgets.QHBoxLayout()
+        
+        # Wrapped in a container layout
+        self.left_panel = QtWidgets.QVBoxLayout()
+        
+        # --- WIDGET TOGGLE SYSTEM ---
+        self.toggle_layout = QtWidgets.QHBoxLayout()
+        self.left_panel.addLayout(self.toggle_layout)
+        
         self.graph_stack = QtWidgets.QVBoxLayout()
+        self.left_panel.addLayout(self.graph_stack)
+        
         self.plots = {}
-        # Sjednocené klíče pro grafy
+        self.graph_widgets = {}
+        
         for name, key, color in [('TEMP', 'TEMP', 'r'), ('ALT', 'ALT', 'b'), ('TSLP', 'TSLP', 'y'), ('UI Latency', 'UI', 'm')]:
             pw = pg.PlotWidget(title=name)
+            pw.setMinimumHeight(120) 
             self.plots[key] = pw.plot(pen=color)
+            self.graph_widgets[key] = pw
             self.graph_stack.addWidget(pw)
+            
+            chk = QtWidgets.QCheckBox(name)
+            chk.setChecked(True)
+            chk.toggled.connect(lambda checked, w=pw: w.setVisible(checked))
+            self.toggle_layout.addWidget(chk)
+        
+        self.toggle_layout.addStretch() 
+        self.left_panel.addStretch() 
+        
         self.map_widget = MapWidget()
-        self.content.addLayout(self.graph_stack, stretch=1)
+        self.content.addLayout(self.left_panel, stretch=1)
         self.content.addWidget(self.map_widget, stretch=1)
         self.layout.addLayout(self.content)
+        
         self.last_ui_time = time.time()
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.update_ui)
@@ -171,7 +223,6 @@ class GroundStation(QtWidgets.QMainWindow):
         self.lbls['Real T'].setText(f"Real T: {int(now*1000)%100000:05d}")
         self.lbls['UI Frame'].setText(f"UI Frame: {ui_ms:.0f} ms")
 
-        # Filtrace úvodního lagu pro UI graf
         if ui_ms < 500:
             self.data['U_LAT'].append(ui_ms)
 
@@ -180,7 +231,7 @@ class GroundStation(QtWidgets.QMainWindow):
             d = q.get()
             for k in ['TEMP', 'ALT', 'LAT', 'LON']: self.data[k].append(d[k])
             tslp_ms = (now - d['time']) * 1000
-            # Filtrace úvodního lagu pro TSLP graf
+            
             if tslp_ms < 1000:
                 self.data['D_LAT'].append(tslp_ms)
             if d['LAT'] != 0:
