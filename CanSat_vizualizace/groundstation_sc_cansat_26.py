@@ -1,3 +1,11 @@
+#Developement branch - visualising simulated data from test_lora_log.txt
+#V1.0
+
+"""
+TO DO List
+
+
+"""
 import queue
 import sys
 import threading
