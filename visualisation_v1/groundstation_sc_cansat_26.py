@@ -1,9 +1,17 @@
 #Developement branch - visualising simulated data from test_lora_log.txt
-#V1.0
-
+#V1.1.0
+#Stable - funguje mapa, funguje vizualizace, na KubFire LowPC to beha krasnych 63ms
 """
-TO DO List
+WHATS IMPLEMENTED?
+    Offline mapy - prvni checkne jestli je ma offline, pokud ne, stahuje je z netu
+    Optimalizace - beha rychle
+    TSLP - time since last packet
 
+----------------------------------
+
+TO DO List
+    Cteni Serialu misto example dat
+    vic grafiku vice hodnot, vizualizace vsech hodnot.
 
 """
 import queue
@@ -11,35 +19,36 @@ import sys
 import threading
 import time
 import csv
+import os
 from PyQt6 import QtWidgets, QtCore, QtGui
 import pyqtgraph as pg
 import numpy as np
 from haversine import haversine
 import contextily as cx
 
-# Matplotlib v PyQt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
-# setup
+# --- RELATIVNÍ CESTY ---
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(CURRENT_DIR)
+DATA_DIR = os.path.join(BASE_DIR, "data")
+MAP_DIR = os.path.join(BASE_DIR, "map_tiles")
+TILES_PATH = os.path.join(MAP_DIR, "{z}", "{x}", "{y}.png")
+
+export_file = os.path.join(DATA_DIR, "telemetry_export.csv")
+data_file = os.path.join(DATA_DIR, "test_lora_log.txt")
+
 q = queue.Queue(maxsize=10) 
-export_file = "telemetry_export.csv"
-data_file = 'test_lora_log.txt'
+START_TIME = time.time()
 
-# --- TVOJE GPS POZICE (Ground Station) ---
-ground_lat = 49.7950 
-ground_lon = 16.6800 
-
-# Cíl/Terč (pro výpočet Dist)
-target_lat = 49.7985833
-target_lon = 16.6877778
+# --- GPS & SCALE ---
+ground_lat, ground_lon = 49.7950, 16.6800 
+target_lat, target_lon = 49.7985833, 16.6877778
+map_scale = 0.04 
 
 def data_reader_worker(data_queue, file_path):
-    with open(export_file, "w", newline="") as f:
-        csv.writer(f).writerow(["timestamp", "temp", "rssi", "snr", "press", "lon", "lat", "alt"])
-    
     sensor_map = {'A': 'TEMP', 'B': 'HUM', 'C': 'ALT', 'D': 'PRESS', 'E': 'LAT', 'F': 'LON', 'R': 'RSSI', 'S': 'SNR'}
-    
     try:
         with open(file_path, 'r', encoding='utf-8') as log_file:
             for line in log_file:
@@ -51,26 +60,17 @@ def data_reader_worker(data_queue, file_path):
                     for item in part.split(';'):
                         item = item.strip()
                         if len(item) < 2: continue
-                        velicina = item[0].upper()
-                        try:
-                            val = float(item[1:])
-                            data[sensor_map.get(velicina, velicina)] = val
+                        v = item[0].upper()
+                        try: data[sensor_map.get(v, v)] = float(item[1:])
                         except: continue
-                
                 for key in ["TEMP", "RSSI", "SNR", "PRESS", "LON", "LAT", "ALT"]:
                     if key not in data: data[key] = 0.0
-                
-                with open(export_file, "a", newline="") as f:
-                    csv.writer(f).writerow([data["time"], data["TEMP"], data["RSSI"], data["SNR"], data["PRESS"], data["LON"], data["LAT"], data["ALT"]])
-                
                 if data_queue.full():
                     try: data_queue.get_nowait()
                     except: pass
-                
                 data_queue.put(data)
                 time.sleep(0.1)
-    except FileNotFoundError:
-        print("Soubor nenalezen.")
+    except FileNotFoundError: print("Data file not found.")
 
 #---------------------------------------MAPA-----------------------
 class MapWidget(FigureCanvas):
@@ -78,153 +78,134 @@ class MapWidget(FigureCanvas):
         self.fig = Figure(figsize=(5, 5), dpi=100)
         self.axes = self.fig.add_subplot(111)
         super().__init__(self.fig)
-        
         self.path_lons, self.path_lats = [], []
-        self.cansat_pos = [0, 0]
         self.ground_pos = [ground_lon, ground_lat]
-        
+        self.current_scale = map_scale
+        self.bg_cache = None
         self.setup_plot()
         
     def setup_plot(self):
         self.fig.patch.set_facecolor('#121212')
         self.axes.set_facecolor('#121212')
         self.axes.set_axis_off() 
-        self.axes.set_aspect('equal', adjustable='datalim')
-        
-        # Pozemní stanice (Pink)
-        self.ground_dot, = self.axes.plot([self.ground_pos[0]], [self.ground_pos[1]], 
-                                          'o', color='#FF69B4', markersize=12, label='Ground', zorder=10)
-        # CanSat (Orange)
-        self.cansat_dot, = self.axes.plot([], [], 'o', color='#FFA500', markersize=12, label='CanSat', zorder=11)
-        
+        self.axes.set_aspect('equal', adjustable='box')
+        self.render_full_map()
+        self.ground_dot, = self.axes.plot([self.ground_pos[0]], [self.ground_pos[1]], 'o', color='#FF69B4', markersize=10, zorder=10, animated=True)
+        self.cansat_dot, = self.axes.plot([], [], 'o', color='#FFA500', markersize=10, zorder=11, animated=True)
+        self.path_line, = self.axes.plot([], [], color='#FFA500', alpha=0.6, linewidth=2, zorder=5, animated=True)
         self.fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
-    def update_view(self):
-        """Inteligentní centrování a zoomování"""
-        # Střed mezi námi a CanSatem
-        center_lon = (self.ground_pos[0] + self.cansat_pos[0]) / 2
-        center_lat = (self.ground_pos[1] + self.cansat_pos[1]) / 2
-        
-        # Výpočet potřebného rozpětí (s 30% marginem)
-        diff_lon = abs(self.ground_pos[0] - self.cansat_pos[0]) * 1.3
-        diff_lat = abs(self.ground_pos[1] - self.cansat_pos[1]) * 1.3
-        
-        # Minimální zoom, aby mapa nebyla moc "nalepená"
-        margin = max(diff_lon, diff_lat, 0.005)
-        
-        self.axes.set_xlim(center_lon - margin, center_lon + margin)
-        self.axes.set_ylim(center_lat - margin, center_lat + margin)
-        
+    def render_full_map(self):
+        self.axes.set_xlim(self.ground_pos[0] - self.current_scale, self.ground_pos[0] + self.current_scale)
+        self.axes.set_ylim(self.ground_pos[1] - self.current_scale, self.ground_pos[1] + self.current_scale)
         try:
-            # Vyčištění staré mapy před novým stažením dlaždic (řeší zasekávání na černé)
             self.axes.images = [] 
-            cx.add_basemap(self.axes, crs='EPSG:4326', source=cx.providers.OpenStreetMap.Mapnik)
-        except: pass
+            cx.add_basemap(self.axes, crs='EPSG:4326', source=TILES_PATH)
+        except:
+            try: cx.add_basemap(self.axes, crs='EPSG:4326', source=cx.providers.OpenStreetMap.Mapnik)
+            except: pass
+        self.draw()
+        self.bg_cache = self.copy_from_bbox(self.axes.bbox)
+
+    def check_watchdog(self, lat, lon):
+        xmin, xmax = self.axes.get_xlim()
+        ymin, ymax = self.axes.get_ylim()
+        margin_x = (xmax - xmin) * 0.15
+        margin_y = (ymax - ymin) * 0.15
+        if (lon < xmin + margin_x or lon > xmax - margin_x or lat < ymin + margin_y or lat > ymax - margin_y):
+            self.current_scale *= 1.5
+            self.render_full_map()
+            return True
+        return False
 
     def update_position(self, lat, lon):
-        self.cansat_pos = [lon, lat]
-        self.path_lons.append(lon)
-        self.path_lats.append(lat)
-        
-        lons, lats = self.path_lons[-500:], self.path_lats[-500:]
-        n = len(lons)
-        colors = np.zeros((n, 4))
-        colors[:, 0] = 1.0; colors[:, 1] = 0.5; colors[:, 3] = np.linspace(0.1, 0.8, n)
-        
-        if hasattr(self, 'scatter'): self.scatter.remove()
-        self.scatter = self.axes.scatter(lons, lats, c=colors, s=15, zorder=5)
-        self.cansat_dot.set_data([lon], [lat])
+        if not self.check_watchdog(lat, lon):
+            self.path_lons.append(lon)
+            self.path_lats.append(lat)
+            self.path_line.set_data(self.path_lons[-300:], self.path_lats[-300:])
+            self.cansat_dot.set_data([lon], [lat])
+            self.restore_region(self.bg_cache)
+            self.axes.draw_artist(self.path_line)
+            self.axes.draw_artist(self.ground_dot)
+            self.axes.draw_artist(self.cansat_dot)
+            self.blit(self.axes.bbox)
 
-#------------------------------------Samotna-vizualizace-----------------------
+#------------------------------------UI-----------------------
 
 class GroundStation(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CanSat Ground Station - Present Mode")
+        self.setWindowTitle("CanSat Ground Station V1.1.0")
         self.data = {k: [] for k in ['RSSI', 'SNR', 'TEMP', 'ALT', 'LAT', 'LON', 'D_LAT', 'U_LAT']}
-        
         self.main_widget = QtWidgets.QWidget()
         self.setCentralWidget(self.main_widget)
         self.layout = QtWidgets.QVBoxLayout(self.main_widget)
-        
         self.top_panel = QtWidgets.QHBoxLayout()
         font = QtGui.QFont(); font.setPointSize(16)
-        self.lbls = {}
-        for k in ['Real T', 'Packet T', 'ALT', 'Dist', 'TSLP', 'UI Frame']:
-            self.lbls[k] = QtWidgets.QLabel(f"{k}: --")
-            self.lbls[k].setFont(font)
-            self.top_panel.addWidget(self.lbls[k])
-        
-        self.lbls['Packet T'].setText("Packet T: N/A")
-        self.lbls['Packet T'].setStyleSheet("color: red;")
+        self.lbls = {k: QtWidgets.QLabel(f"{k}: --") for k in ['Real T', 'ALT', 'Dist', 'TSLP', 'UI Frame']}
+        for lbl in self.lbls.values(): 
+            lbl.setFont(font)
+            self.top_panel.addWidget(lbl)
         self.layout.addLayout(self.top_panel)
-
         self.content = QtWidgets.QHBoxLayout()
         self.graph_stack = QtWidgets.QVBoxLayout()
-        
         self.plots = {}
-        configs = [('TEMP', 'r'), ('ALT', 'b'), ('Data Latency', 'y'), ('UI Frame Latency', 'm')]
-        for name, color in configs:
+        # Sjednocené klíče pro grafy
+        for name, key, color in [('TEMP', 'TEMP', 'r'), ('ALT', 'ALT', 'b'), ('TSLP', 'TSLP', 'y'), ('UI Latency', 'UI', 'm')]:
             pw = pg.PlotWidget(title=name)
-            self.plots[name] = pw.plot(pen=color)
+            self.plots[key] = pw.plot(pen=color)
             self.graph_stack.addWidget(pw)
-            
         self.map_widget = MapWidget()
         self.content.addLayout(self.graph_stack, stretch=1)
         self.content.addWidget(self.map_widget, stretch=1)
         self.layout.addLayout(self.content)
-        
         self.last_ui_time = time.time()
-        self.last_map_time = 0
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.update_ui)
-        self.timer.start(50)
+        self.timer.start(50) 
         
     def update_ui(self):
         now = time.time()
         ui_ms = (now - self.last_ui_time) * 1000
         self.last_ui_time = now
-        
         self.lbls['Real T'].setText(f"Real T: {int(now*1000)%100000:05d}")
         self.lbls['UI Frame'].setText(f"UI Frame: {ui_ms:.0f} ms")
-        self.data['U_LAT'].append(ui_ms)
+
+        # Filtrace úvodního lagu pro UI graf
+        if ui_ms < 500:
+            self.data['U_LAT'].append(ui_ms)
 
         updated = False
         while not q.empty():
             d = q.get()
-            self.data['TEMP'].append(d['TEMP']); self.data['ALT'].append(d['ALT'])
-            self.data['LAT'].append(d['LAT']); self.data['LON'].append(d['LON'])
-            self.data['D_LAT'].append((now - d['time']) * 1000)
-            
+            for k in ['TEMP', 'ALT', 'LAT', 'LON']: self.data[k].append(d[k])
+            tslp_ms = (now - d['time']) * 1000
+            # Filtrace úvodního lagu pro TSLP graf
+            if tslp_ms < 1000:
+                self.data['D_LAT'].append(tslp_ms)
             if d['LAT'] != 0:
                 self.map_widget.update_position(d['LAT'], d['LON'])
                 updated = True
 
         if not self.data['ALT']: return
-        for k in self.data: self.data[k] = self.data[k][-500:]
+        for k in self.data: self.data[k] = self.data[k][-300:]
         
         self.plots['TEMP'].setData(self.data['TEMP'])
         self.plots['ALT'].setData(self.data['ALT'])
-        self.plots['Data Latency'].setData(self.data['D_LAT'])
-        self.plots['UI Frame Latency'].setData(self.data['U_LAT'])
         
-        self.lbls['ALT'].setText(f"ALT: {self.data['ALT'][-1]} m")
-        tslp = self.data['D_LAT'][-1]
-        self.lbls['TSLP'].setText(f"TSLP: {tslp:.0f} ms")
-        self.lbls['TSLP'].setStyleSheet(f"color: {'green' if tslp < 100 else 'red'};")
+        if self.data['D_LAT']:
+            self.plots['TSLP'].setData(self.data['D_LAT'])
+            self.lbls['TSLP'].setText(f"TSLP: {self.data['D_LAT'][-1]:.0f} ms")
+        
+        if self.data['U_LAT']:
+            self.plots['UI'].setData(self.data['U_LAT'])
         
         dist = round(haversine((self.data['LAT'][-1], self.data['LON'][-1]), (target_lat, target_lon))*1000, 1)
         self.lbls['Dist'].setText(f"Dist: {dist}m")
-
-        # Easing/Throttling mapy: Aktualizace 1x za 2 sekundy, aby se mapa nezasekávala
-        if updated and (now - self.last_map_time) > 2.0:
-            self.map_widget.update_view()
-            self.map_widget.draw()
-            self.last_map_time = now
+        self.lbls['ALT'].setText(f"ALT: {self.data['ALT'][-1]} m")
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
-    app.setStyle("Fusion")
     threading.Thread(target=data_reader_worker, args=(q, data_file), daemon=True).start()
     w = GroundStation(); w.show()
     sys.exit(app.exec())
