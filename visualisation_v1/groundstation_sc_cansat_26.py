@@ -1,5 +1,5 @@
 #Developement branch - visualising simulated data from test_lora_log.txt
-#V1.1.1
+#V1.1.2
 #Stable - funguje mapa, funguje vizualizace, na KubFire LowPC to beha krasnych 63ms
 """
 WHATS IMPLEMENTED?
@@ -8,12 +8,12 @@ WHATS IMPLEMENTED?
     TSLP - time since last packet
     Windows resizing funguje
     Horni Bar je usporadany a zobrazuje vsechny values.
+    vsechny hodnoty maji sve grafiky, color coded.
 
 ----------------------------------
 
 TO DO List
     Cteni Serialu misto example dat
-    vic grafiku vice hodnot, vizualizace vsech hodnot.
 
 """
 import queue
@@ -86,7 +86,6 @@ class MapWidget(FigureCanvas):
         self.bg_cache = None
         self.setup_plot()
         
-        # Debounce timer for resizing
         self.resize_timer = QtCore.QTimer()
         self.resize_timer.setSingleShot(True)
         self.resize_timer.timeout.connect(self.on_resize_timeout)
@@ -97,19 +96,16 @@ class MapWidget(FigureCanvas):
         self.axes.set_axis_off() 
         self.axes.set_aspect('equal', adjustable='box')
         
-        # Create animated artists first
         self.ground_dot, = self.axes.plot([self.ground_pos[0]], [self.ground_pos[1]], 'o', color='#FF69B4', markersize=10, zorder=10, animated=True)
         self.cansat_dot, = self.axes.plot([], [], 'o', color='#FFA500', markersize=10, zorder=11, animated=True)
         self.path_line, = self.axes.plot([], [], color='#FFA500', alpha=0.6, linewidth=2, zorder=5, animated=True)
         
-        # Hook into standard drawing events to protect animated elements
         self.mpl_connect('draw_event', self.on_draw)
         
         self.render_full_map()
         self.fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
     def on_draw(self, event):
-        # Always recapture the background when a native full draw occurs, then paint the animated layers
         self.bg_cache = self.copy_from_bbox(self.axes.bbox)
         self.axes.draw_artist(self.path_line)
         self.axes.draw_artist(self.ground_dot)
@@ -156,7 +152,6 @@ class MapWidget(FigureCanvas):
         self.resize_timer.start(400)
 
     def on_resize_timeout(self):
-        # Just triggering the full map render handles the internal repainting via draw_event
         self.render_full_map()
 
 #------------------------------------UI-----------------------
@@ -164,10 +159,23 @@ class MapWidget(FigureCanvas):
 class GroundStation(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CanSat Ground Station V1.1.1")
+        self.setWindowTitle("CanSat Ground Station V1.1.2")
         
-        # Added HUM, PRESS
-        self.data = {k: [] for k in ['RSSI', 'SNR', 'TEMP', 'ALT', 'LAT', 'LON', 'D_LAT', 'U_LAT', 'HUM', 'PRESS']}
+        self.setStyleSheet("""
+            QCheckBox::indicator {
+                width: 14px;
+                height: 14px;
+                background-color: transparent;
+                border: 1px solid #777;
+                border-radius: 3px;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #FFA500;
+                border: 1px solid #FFA500;
+            }
+        """)
+
+        self.data = {k: [] for k in ['RSSI', 'SNR', 'TEMP', 'ALT', 'LAT', 'LON', 'D_LAT', 'U_LAT', 'HUM', 'PRESS', 'DIST']}
         
         self.main_widget = QtWidgets.QWidget()
         self.setCentralWidget(self.main_widget)
@@ -175,6 +183,15 @@ class GroundStation(QtWidgets.QMainWindow):
         
         # --- TOP DATA BARS ---
         self.top_container = QtWidgets.QVBoxLayout()
+        
+        # Title Row
+        self.title_layout = QtWidgets.QHBoxLayout()
+        self.title_lbl = QtWidgets.QLabel("Space Carrots CanSat TX Visualisation")
+        title_font = QtGui.QFont("Eras Bold ITC", 32)
+        self.title_lbl.setFont(title_font)
+        self.title_lbl.setStyleSheet("color: #FFA500;")
+        self.title_layout.addWidget(self.title_lbl, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
+        
         self.row1_layout = QtWidgets.QHBoxLayout()
         self.row2_layout = QtWidgets.QHBoxLayout()
         
@@ -185,20 +202,36 @@ class GroundStation(QtWidgets.QMainWindow):
         row1_keys = ['Real T', 'Packet T', 'TSLP', 'UI Frame', 'RSSI', 'SNR']
         row2_keys = ['Alt', 'Lng', 'Lat', 'Dist', 'Temp', 'Hum', 'Pressure']
         
+        # Nová paleta s plným spektrem a pastelovějšími tóny pro červenou a zelenou
+        self.color_map = {
+            'TSLP': '#FFD700',       # Gold / Jemnější žlutá
+            'UI Frame': '#FF00FF',   # Magenta
+            'RSSI': '#00FFFF',       # Cyan
+            'SNR': '#FFFFFF',        # Bílá
+            'Dist': '#9370DB',       # Medium Purple
+            'Alt': '#1E90FF',        # Dodger Blue
+            'Temp': '#FF6A6A',       # Indian Red 1 / Soft Red
+            'Hum': '#FFA500',        # Oranžová
+            'Pressure': '#98FB98'    # Pale Green / Pastelová zelená
+        }
+        
         for k in row1_keys:
             lbl = QtWidgets.QLabel(f"{k}: --")
             lbl.setFont(font)
+            if k in self.color_map: lbl.setStyleSheet(f"color: {self.color_map[k]};")
             self.lbls[k] = lbl
             self.row1_layout.addWidget(lbl)
             
         for k in row2_keys:
             lbl = QtWidgets.QLabel(f"{k}: --")
             lbl.setFont(font)
+            if k in self.color_map: lbl.setStyleSheet(f"color: {self.color_map[k]};")
             self.lbls[k] = lbl
             self.row2_layout.addWidget(lbl)
             
         self.lbls['Packet T'].setText("Packet T: <font color='red'>N/A</font>")
         
+        self.top_container.addLayout(self.title_layout)
         self.top_container.addLayout(self.row1_layout)
         self.top_container.addLayout(self.row2_layout)
         self.layout.addLayout(self.top_container)
@@ -211,16 +244,26 @@ class GroundStation(QtWidgets.QMainWindow):
         self.left_panel.addLayout(self.toggle_layout)
         
         self.graph_stack = QtWidgets.QVBoxLayout()
-        # EXPLICIT STRETCH 1 added here so the stack expands when items hide
         self.left_panel.addLayout(self.graph_stack, stretch=1) 
         
         self.plots = {}
         self.graph_widgets = {}
         
-        for name, key, color in [('Temp', 'TEMP', 'r'), ('Alt', 'ALT', 'b'), ('TSLP', 'TSLP', 'y'), ('UI Latency', 'UI', 'm')]:
+        graph_configs = [
+            ('TSLP', 'TSLP', self.color_map['TSLP']),
+            ('UI Latency', 'UI', self.color_map['UI Frame']),
+            ('RSSI', 'RSSI', self.color_map['RSSI']),
+            ('SNR', 'SNR', self.color_map['SNR']),
+            ('Distance', 'DIST', self.color_map['Dist']),
+            ('Alt', 'ALT', self.color_map['Alt']),
+            ('Temp', 'TEMP', self.color_map['Temp']),
+            ('Humidity', 'HUM', self.color_map['Hum']),
+            ('Pressure', 'PRESS', self.color_map['Pressure'])
+        ]
+        
+        for name, key, color in graph_configs:
             pw = pg.PlotWidget(title=name)
-            # Reduced minimum height so they don't break layout limits, stretch handles the visual fill
-            pw.setMinimumHeight(150) 
+            pw.setMinimumHeight(100) 
             self.plots[key] = pw.plot(pen=color)
             self.graph_widgets[key] = pw
             self.graph_stack.addWidget(pw)
@@ -249,7 +292,6 @@ class GroundStation(QtWidgets.QMainWindow):
         self.lbls['Real T'].setText(f"Real T: {int(now*1000)%100000:05d}")
         self.lbls['UI Frame'].setText(f"UI Frame: {ui_ms:.0f} ms")
 
-        # Filtrace úvodního lagu pro UI graf, omezeno z obou stran
         if 0 <= ui_ms < 500:
             self.data['U_LAT'].append(ui_ms)
 
@@ -261,10 +303,15 @@ class GroundStation(QtWidgets.QMainWindow):
             self.data['HUM'].append(d.get('HUM', 0.0))
             
             tslp_ms = (now - d['time']) * 1000
-            
-            # Filtrace úvodního lagu a nesmyslných záporných hodnot pro TSLP graf
             if 0 <= tslp_ms < 1000:
                 self.data['D_LAT'].append(tslp_ms)
+                
+            if d['LAT'] != 0 and d['LON'] != 0:
+                dist = round(haversine((d['LAT'], d['LON']), (target_lat, target_lon))*1000, 1)
+            else:
+                dist = self.data['DIST'][-1] if self.data['DIST'] else 0.0
+            self.data['DIST'].append(dist)
+
             if d['LAT'] != 0:
                 self.map_widget.update_position(d['LAT'], d['LON'])
                 updated = True
@@ -272,8 +319,9 @@ class GroundStation(QtWidgets.QMainWindow):
         if not self.data['ALT']: return
         for k in self.data: self.data[k] = self.data[k][-300:]
         
-        self.plots['TEMP'].setData(self.data['TEMP'])
-        self.plots['ALT'].setData(self.data['ALT'])
+        for key in ['TEMP', 'ALT', 'RSSI', 'SNR', 'HUM', 'PRESS', 'DIST']:
+            if self.data[key]:
+                self.plots[key].setData(self.data[key])
         
         if self.data['D_LAT']:
             self.plots['TSLP'].setData(self.data['D_LAT'])
@@ -282,9 +330,7 @@ class GroundStation(QtWidgets.QMainWindow):
         if self.data['U_LAT']:
             self.plots['UI'].setData(self.data['U_LAT'])
         
-        # --- UPDATE LABELS ---
-        dist = round(haversine((self.data['LAT'][-1], self.data['LON'][-1]), (target_lat, target_lon))*1000, 1)
-        self.lbls['Dist'].setText(f"Dist: {dist}m")
+        self.lbls['Dist'].setText(f"Dist: {self.data['DIST'][-1]}m")
         self.lbls['Alt'].setText(f"Alt: {self.data['ALT'][-1]} m")
         self.lbls['Lng'].setText(f"Lng: {self.data['LON'][-1]:.5f}")
         self.lbls['Lat'].setText(f"Lat: {self.data['LAT'][-1]:.5f}")
