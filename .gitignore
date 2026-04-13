@@ -1,0 +1,12 @@
+# Ignorování složek s objemnými daty
+map_data/
+data/
+
+# Ignorování doèasných souborù Pythonu
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ignorování systémových souborù
+.DS_Store
+Thumbs.db
