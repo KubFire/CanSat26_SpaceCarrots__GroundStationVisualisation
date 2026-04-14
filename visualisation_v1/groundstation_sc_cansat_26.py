@@ -1,9 +1,9 @@
 #Developement branch - visualising simulated data from test_lora_log.txt
-#V1.1.6
+#V1.1.7
 #Stable - funguje mapa, funguje vizualizace, na KubFire LowPC to beha krasnych 63ms
+#Smaller screen support
 """
 WHATS IMPLEMENTED?
-    Offline mapy - prvni checkne jestli je ma offline, pokud ne, stahuje je z netu
     Optimalizace - Fast-Forward (Zero Latency Priority)
     Drift - rozdil casu Arduino vs PC (Topmost priority)
     Upkeep - surový čas Arduina (millis) + Graf (Topmost graph)
@@ -11,8 +11,8 @@ WHATS IMPLEMENTED?
     CanSat Cycle Δ - interval mezi pakety z pohledu Arduina
     MSPF - UI Frame latency (millisecperframe)
     Sync Drift - tlacitko pro manualni synchronizaci casu
-    Map 1:1 adaptive aspect ratio (No scale bar, Zoom 0.02)
-    SlidingWindow
+    Map 1:1 adaptive aspect ratio - Fixed 50/50 screen split
+    Two-row layout pro checkboxy na mensich displejich
 """
 import queue
 import sys
@@ -158,7 +158,7 @@ class MapWidget(FigureCanvas):
 class GroundStation(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CanSat Ground Station V1.1.6")
+        self.setWindowTitle("CanSat Ground Station V1.1.7")
         self.setStyleSheet("""
             QCheckBox::indicator { width: 14px; height: 14px; background-color: transparent; border: 1px solid #777; border-radius: 3px; } 
             QCheckBox::indicator:checked { background-color: #EA5A0C; border: 1px solid #EA5A0C; image: url("data:image/svg+xml;utf8,<svg width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='4' stroke-linecap='round' stroke-linejoin='round' xmlns='http://www.w3.org/2000/svg'><polyline points='20 6 9 17 4 12'/></svg>"); }
@@ -196,7 +196,13 @@ class GroundStation(QtWidgets.QMainWindow):
 
         self.content = QtWidgets.QHBoxLayout()
         self.left_panel = QtWidgets.QVBoxLayout()
-        self.toggle_row = QtWidgets.QHBoxLayout()
+        
+        # --- NOVÝ LAYOUT PŘEPÍNAČŮ VE 2 ŘÁDCÍCH ---
+        self.toggle_container = QtWidgets.QHBoxLayout()
+        self.toggle_rows_layout = QtWidgets.QVBoxLayout()
+        self.t_row1 = QtWidgets.QHBoxLayout()
+        self.t_row2 = QtWidgets.QHBoxLayout()
+        
         self.graph_stack = QtWidgets.QVBoxLayout()
         
         self.plots = {}
@@ -217,6 +223,8 @@ class GroundStation(QtWidgets.QMainWindow):
         ]
         
         start_visible_keys = {'U_LAT', 'DIST', 'V_SPEED', 'ALT', 'DRIFT', 'CAN_DELTA', 'UPKEEP'}
+        
+        checkboxes = []
         for i, (name, key, col) in enumerate(graph_configs):
             pw = pg.PlotWidget(title=name)
             pw.setMinimumHeight(60)
@@ -226,7 +234,7 @@ class GroundStation(QtWidgets.QMainWindow):
             chk = QtWidgets.QCheckBox(name)
             chk.setChecked(key in start_visible_keys)
             chk.toggled.connect(lambda checked, w=pw: w.setVisible(checked))
-            self.toggle_row.addWidget(chk)
+            checkboxes.append(chk)
 
         self.msg_log = QtWidgets.QTextEdit()
         self.msg_log.setReadOnly(True)
@@ -234,18 +242,50 @@ class GroundStation(QtWidgets.QMainWindow):
         self.msg_log.setStyleSheet("background:#121212; color:#EA5A0C; font-family:monospace;")
         self.msg_log.setVisible(True)
         self.graph_stack.addWidget(self.msg_log)
-        chk_err = QtWidgets.QCheckBox("Error+Msg"); chk_err.setChecked(True); chk_err.toggled.connect(self.msg_log.setVisible); self.toggle_row.addWidget(chk_err)
         
-        self.toggle_row.addStretch()
+        chk_err = QtWidgets.QCheckBox("Error+Msg")
+        chk_err.setChecked(True)
+        chk_err.toggled.connect(self.msg_log.setVisible)
+        checkboxes.append(chk_err)
+        
+        # Rozdělení přepínačů do dvou řádků
+        mid_point = (len(checkboxes) + 1) // 2
+        for i, chk in enumerate(checkboxes):
+            if i < mid_point:
+                self.t_row1.addWidget(chk)
+            else:
+                self.t_row2.addWidget(chk)
+                
+        self.t_row1.addStretch()
+        self.t_row2.addStretch()
+        
+        self.toggle_rows_layout.addLayout(self.t_row1)
+        self.toggle_rows_layout.addLayout(self.t_row2)
+        
+        self.toggle_container.addLayout(self.toggle_rows_layout)
+        
         self.btn_sync = QtWidgets.QPushButton("Sync Drift")
-        self.btn_sync.setFixedSize(80, 40)
+        # Trochu vyšší tlačítko, aby hezky lícovalo ke 2 řádkům
+        self.btn_sync.setFixedSize(80, 50) 
         self.btn_sync.setStyleSheet("background:#FF2222; color:#FFF; font-weight:bold; border-radius:4px;")
         self.btn_sync.clicked.connect(self.do_sync)
-        self.toggle_row.addWidget(self.btn_sync)
+        self.toggle_container.addWidget(self.btn_sync)
 
-        self.left_panel.addLayout(self.toggle_row); self.left_panel.addLayout(self.graph_stack, stretch=1)
+        self.left_panel.addLayout(self.toggle_container)
+        self.left_panel.addLayout(self.graph_stack, stretch=1)
+        
+        # Obalení levého panelu pro zachování 50/50 rozložení mapy
+        self.left_widget = QtWidgets.QWidget()
+        self.left_widget.setLayout(self.left_panel)
+        self.left_widget.setMinimumWidth(100)
+        
         self.map_w = MapWidget()
-        self.content.addLayout(self.left_panel, stretch=1); self.content.addWidget(self.map_w, stretch=1)
+        self.map_w.setMinimumWidth(100)
+        self.map_w.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
+        
+        self.content.addWidget(self.left_widget, stretch=1)
+        self.content.addWidget(self.map_w, stretch=1)
+        
         self.layout.addLayout(self.content)
 
         self.last_ui_t = time.time()
@@ -272,6 +312,7 @@ class GroundStation(QtWidgets.QMainWindow):
                 self.msg_log.append(f"[{time.strftime('%H:%M:%S')}] {d['text']}"); continue
             
             curr_m = d.get('MILLIS', 0)
+            
             for k in ['TEMP', 'ALT', 'LAT', 'LON', 'RSSI', 'SNR', 'PRESS', 'MILLIS', 'V_SPEED']:
                 self.data[k].append(d.get(k, 0.0))
             self.data['HUM'].append(d.get('HUM', 0.0))
@@ -280,7 +321,6 @@ class GroundStation(QtWidgets.QMainWindow):
             can_delta = int(curr_m - self.last_millis) if self.last_millis != 0 else 0
             self.data['CAN_DELTA'].append(can_delta)
             
-            # Diagnostic for the specific packet
             gtslp = (now - d['time']) * 1000
             if 0 <= gtslp < 1000: self.data['GTSLP'].append(gtslp)
             
@@ -291,16 +331,15 @@ class GroundStation(QtWidgets.QMainWindow):
             self.data['DIST'].append(dist)
             
             self.last_millis = curr_m
-            last_packet = d # Save reference to the absolute newest packet
+            last_packet = d 
 
-        # Zero-Latency update: only update expensive UI elements once with the newest packet
         if last_packet:
             curr_m = last_packet.get('MILLIS', 0)
             self.lbls['Upkeep'].setText(f"Upkeep: {int(curr_m)//1000} {int(curr_m)%1000:03d}")
-            self.lbls['CanSat Cycle Δ'].setText(f"CanSat Cycle Δ: {self.data['CAN_DELTA'][-1]} ms")
+            self.lbls['CanSat Cycle Δ'].setText(f"CanSat Cycle Δ: {self.data['CAN_DELTA'][-1] if self.data['CAN_DELTA'] else 0} ms")
             self.lbls['Ground Cycle Δ'].setText(f"Ground Cycle Δ: {self.data['GTSLP'][-1]:.0f} ms")
             
-            drift = self.data['DRIFT'][-1]
+            drift = self.data['DRIFT'][-1] if self.data['DRIFT'] else 0
             drift_txt = "<55ms" if abs(drift) < 55 else f"{drift} ms"
             self.lbls['Drift'].setText(f"Drift: {drift_txt}")
             
