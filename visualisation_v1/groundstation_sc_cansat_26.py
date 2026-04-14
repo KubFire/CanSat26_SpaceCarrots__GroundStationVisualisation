@@ -1,7 +1,8 @@
 #Developement branch - visualising simulated data from test_lora_log.txt
-#V1.1.7
+#V1.1.8
 #Stable - funguje mapa, funguje vizualizace, na KubFire LowPC to beha krasnych 63ms
 #Smaller screen support
+
 """
 WHATS IMPLEMENTED?
     Optimalizace - Fast-Forward (Zero Latency Priority)
@@ -13,6 +14,7 @@ WHATS IMPLEMENTED?
     Sync Drift - tlacitko pro manualni synchronizaci casu
     Map 1:1 adaptive aspect ratio - Fixed 50/50 screen split
     Two-row layout pro checkboxy na mensich displejich
+    AUTO COM PORT - Automatic detection and hot-plugging - UnTEsted
 """
 import queue
 import sys
@@ -20,6 +22,7 @@ import threading
 import time
 import os
 import serial
+import serial.tools.list_ports
 import numpy as np
 from PyQt6 import QtWidgets, QtCore, QtGui
 import pyqtgraph as pg
@@ -30,7 +33,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
 # --- CONFIG ---
-SERIAL_PORT = "COM8"
+SERIAL_PORT = "AUTO" # Set to "AUTO" for auto-detection, or specify a port like "COM8"
 BAUD_RATE = 115200
 ground_lat, ground_lon = 49.7950, 16.6800 
 target_lat, target_lon = 49.7985833, 16.6877778
@@ -43,34 +46,72 @@ TILES_PATH = os.path.join(MAP_DIR, "{z}", "{x}", "{y}.png")
 
 q = queue.Queue(maxsize=50) 
 
-def data_reader_worker(data_queue, port, baud):
+def data_reader_worker(data_queue, target_port, baud):
     sensor_map = {'M': 'MILLIS', 'A': 'ALT', 'B': 'TEMP', 'C': 'HUM', 'D': 'PRESS', 'E': 'LAT', 'F': 'LON', 'V': 'V_SPEED', 'R': 'RSSI', 'S': 'SNR'}
-    try:
-        ser = serial.Serial(port, baud, timeout=0.1)
-        if not data_queue.full():
-            data_queue.put({'type': 'msg', 'text': f"Connected to {port}"})
-        while True:
-            raw_line = ser.readline()
-            if not raw_line: continue
-            try:
-                line = raw_line.decode('utf-8').strip()
-                if not line: continue
-                data = {'time': time.time()} 
-                parts = line.split(';') 
-                for item in parts:
-                    item = item.strip()
-                    if len(item) < 2: continue
-                    v = item[0].upper()
-                    if v == 'X':
-                        data_queue.put({'type': 'msg', 'text': f"MSG: {item[1:]}"})
-                        continue
-                    try: data[sensor_map.get(v, v)] = float(item[1:])
-                    except: continue
-                data_queue.put(data)
-            except: continue
-    except Exception as e:
-        if not data_queue.full():
-            data_queue.put({'type': 'msg', 'text': f"Serial Error: {e}"})
+    last_status = ""
+    
+    while True:
+        port_to_open = target_port
+        
+        # --- AUTO DETECT LOGIC ---
+        if target_port == "AUTO":
+            port_to_open = None
+            ports = serial.tools.list_ports.comports()
+            # Look for common Arduino / LoRa receiver serial chips
+            for p in ports:
+                desc = p.description.lower()
+                if any(k in desc for k in ['arduino', 'ch340', 'cp210', 'cp210x', 'ftdi', 'usb serial', 'usb-serial']):
+                    port_to_open = p.device
+                    break
+            # Fallback: Just grab the first USB device if specific chips aren't named
+            if not port_to_open:
+                for p in ports:
+                    if 'usb' in p.description.lower() or 'usb' in p.hwid.lower():
+                        port_to_open = p.device
+                        break
+        
+        if not port_to_open:
+            if last_status != "WAITING":
+                if not data_queue.full(): data_queue.put({'type': 'msg', 'text': "AUTO: Waiting for USB receiver..."})
+                last_status = "WAITING"
+            time.sleep(2)
+            continue
+            
+        try:
+            ser = serial.Serial(port_to_open, baud, timeout=0.1)
+            if not data_queue.full():
+                data_queue.put({'type': 'msg', 'text': f"Connected to {port_to_open}"})
+            last_status = "CONNECTED"
+            
+            while True:
+                raw_line = ser.readline()
+                if not raw_line: continue
+                try:
+                    line = raw_line.decode('utf-8').strip()
+                    if not line: continue
+                    data = {'time': time.time()} 
+                    parts = line.split(';') 
+                    for item in parts:
+                        item = item.strip()
+                        if len(item) < 2: continue
+                        v = item[0].upper()
+                        if v == 'X':
+                            data_queue.put({'type': 'msg', 'text': f"MSG: {item[1:]}"})
+                            continue
+                        try: data[sensor_map.get(v, v)] = float(item[1:])
+                        except: continue
+                    data_queue.put(data)
+                except Exception as parse_err: 
+                    continue # Ignore decode errors
+                    
+        except serial.SerialException:
+            # This triggers if the device is physically unplugged while running
+            if last_status != "DISCONNECTED":
+                if not data_queue.full(): data_queue.put({'type': 'msg', 'text': f"Connection to {port_to_open} lost. Reconnecting..."})
+                last_status = "DISCONNECTED"
+            time.sleep(1)
+        except Exception as e:
+            time.sleep(1)
 
 class MapWidget(FigureCanvas):
     def __init__(self, parent=None):
@@ -158,7 +199,7 @@ class MapWidget(FigureCanvas):
 class GroundStation(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CanSat Ground Station V1.1.7")
+        self.setWindowTitle("CanSat Ground Station V1.1.8")
         self.setStyleSheet("""
             QCheckBox::indicator { width: 14px; height: 14px; background-color: transparent; border: 1px solid #777; border-radius: 3px; } 
             QCheckBox::indicator:checked { background-color: #EA5A0C; border: 1px solid #EA5A0C; image: url("data:image/svg+xml;utf8,<svg width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='4' stroke-linecap='round' stroke-linejoin='round' xmlns='http://www.w3.org/2000/svg'><polyline points='20 6 9 17 4 12'/></svg>"); }
@@ -197,7 +238,6 @@ class GroundStation(QtWidgets.QMainWindow):
         self.content = QtWidgets.QHBoxLayout()
         self.left_panel = QtWidgets.QVBoxLayout()
         
-        # --- NOVÝ LAYOUT PŘEPÍNAČŮ VE 2 ŘÁDCÍCH ---
         self.toggle_container = QtWidgets.QHBoxLayout()
         self.toggle_rows_layout = QtWidgets.QVBoxLayout()
         self.t_row1 = QtWidgets.QHBoxLayout()
@@ -228,9 +268,10 @@ class GroundStation(QtWidgets.QMainWindow):
         for i, (name, key, col) in enumerate(graph_configs):
             pw = pg.PlotWidget(title=name)
             pw.setMinimumHeight(60)
+            pw.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
             self.plots[key] = pw.plot(pen=col)
             pw.setVisible(key in start_visible_keys)
-            self.graph_stack.addWidget(pw)
+            self.graph_stack.addWidget(pw, stretch=1)
             chk = QtWidgets.QCheckBox(name)
             chk.setChecked(key in start_visible_keys)
             chk.toggled.connect(lambda checked, w=pw: w.setVisible(checked))
@@ -248,7 +289,6 @@ class GroundStation(QtWidgets.QMainWindow):
         chk_err.toggled.connect(self.msg_log.setVisible)
         checkboxes.append(chk_err)
         
-        # Rozdělení přepínačů do dvou řádků
         mid_point = (len(checkboxes) + 1) // 2
         for i, chk in enumerate(checkboxes):
             if i < mid_point:
@@ -265,7 +305,6 @@ class GroundStation(QtWidgets.QMainWindow):
         self.toggle_container.addLayout(self.toggle_rows_layout)
         
         self.btn_sync = QtWidgets.QPushButton("Sync Drift")
-        # Trochu vyšší tlačítko, aby hezky lícovalo ke 2 řádkům
         self.btn_sync.setFixedSize(80, 50) 
         self.btn_sync.setStyleSheet("background:#FF2222; color:#FFF; font-weight:bold; border-radius:4px;")
         self.btn_sync.clicked.connect(self.do_sync)
@@ -274,10 +313,9 @@ class GroundStation(QtWidgets.QMainWindow):
         self.left_panel.addLayout(self.toggle_container)
         self.left_panel.addLayout(self.graph_stack, stretch=1)
         
-        # Obalení levého panelu pro zachování 50/50 rozložení mapy
         self.left_widget = QtWidgets.QWidget()
         self.left_widget.setLayout(self.left_panel)
-        self.left_widget.setMinimumWidth(100)
+        self.left_widget.setMinimumWidth(100) 
         
         self.map_w = MapWidget()
         self.map_w.setMinimumWidth(100)
