@@ -1,5 +1,5 @@
 #Developement branch - visualising simulated data from test_lora_log.txt
-#V1.1.8
+#V1.1.9
 #Stable - funguje mapa, funguje vizualizace, na KubFire LowPC to beha krasnych 63ms
 #Smaller screen support
 
@@ -15,6 +15,7 @@ WHATS IMPLEMENTED?
     Map 1:1 adaptive aspect ratio - Fixed 50/50 screen split
     Two-row layout pro checkboxy na mensich displejich
     AUTO COM PORT - Automatic detection and hot-plugging - UnTEsted
+    Ukladani na csv soubor.
 """
 import queue
 import sys
@@ -49,6 +50,9 @@ q = queue.Queue(maxsize=50)
 def data_reader_worker(data_queue, target_port, baud):
     sensor_map = {'M': 'MILLIS', 'A': 'ALT', 'B': 'TEMP', 'C': 'HUM', 'D': 'PRESS', 'E': 'LAT', 'F': 'LON', 'V': 'V_SPEED', 'R': 'RSSI', 'S': 'SNR'}
     last_status = ""
+    log_filename = f"cansat_log_{int(time.time())}.csv"
+    csv_keys = ['time', 'MILLIS', 'ALT', 'TEMP', 'HUM', 'PRESS', 'LAT', 'LON', 'V_SPEED', 'RSSI', 'SNR']
+    log_file = None
     
     while True:
         port_to_open = target_port
@@ -83,6 +87,10 @@ def data_reader_worker(data_queue, target_port, baud):
                 data_queue.put({'type': 'msg', 'text': f"Connected to {port_to_open}"})
             last_status = "CONNECTED"
             
+            log_file = open(log_filename, "a", encoding="utf-8")
+            if os.path.getsize(log_filename) == 0:
+                log_file.write(",".join(csv_keys) + "\n")
+            
             while True:
                 raw_line = ser.readline()
                 if not raw_line: continue
@@ -100,17 +108,26 @@ def data_reader_worker(data_queue, target_port, baud):
                             continue
                         try: data[sensor_map.get(v, v)] = float(item[1:])
                         except: continue
+                    
                     data_queue.put(data)
+                    
+                    # Write to CSV
+                    row = [str(data.get(k, "")) for k in csv_keys]
+                    log_file.write(",".join(row) + "\n")
+                    log_file.flush()
+                    
                 except Exception as parse_err: 
                     continue # Ignore decode errors
                     
         except serial.SerialException:
             # This triggers if the device is physically unplugged while running
+            if log_file: log_file.close()
             if last_status != "DISCONNECTED":
                 if not data_queue.full(): data_queue.put({'type': 'msg', 'text': f"Connection to {port_to_open} lost. Reconnecting..."})
                 last_status = "DISCONNECTED"
             time.sleep(1)
         except Exception as e:
+            if log_file: log_file.close()
             time.sleep(1)
 
 class MapWidget(FigureCanvas):
@@ -199,7 +216,7 @@ class MapWidget(FigureCanvas):
 class GroundStation(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CanSat Ground Station V1.1.8")
+        self.setWindowTitle("CanSat Ground Station V1.1.9")
         self.setStyleSheet("""
             QCheckBox::indicator { width: 14px; height: 14px; background-color: transparent; border: 1px solid #777; border-radius: 3px; } 
             QCheckBox::indicator:checked { background-color: #EA5A0C; border: 1px solid #EA5A0C; image: url("data:image/svg+xml;utf8,<svg width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='4' stroke-linecap='round' stroke-linejoin='round' xmlns='http://www.w3.org/2000/svg'><polyline points='20 6 9 17 4 12'/></svg>"); }
@@ -223,14 +240,22 @@ class GroundStation(QtWidgets.QMainWindow):
         font = QtGui.QFont("Arial", 16)
         
         self.lbl_keys = ['Drift', 'World T', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'MSPF', 'RSSI', 'SNR', 'Alt', 'V_Speed', 'Lng', 'Lat', 'Dist', 'Temp', 'Hum', 'Pressure']
-        self.lbls = {k: QtWidgets.QLabel(f"{k}: --") for k in self.lbl_keys}
+        self.lbls = {k: QtWidgets.QLabel() for k in self.lbl_keys}
         
         colors = {'Drift': '#FF4500', 'Upkeep': '#FFFFFF', 'Ground Cycle Δ': '#FFD700', 'MSPF': '#FF00FF', 'RSSI': '#00FFFF', 'SNR': '#FFFFFF', 'Dist': '#9370DB', 'V_Speed': '#00FA9A', 'Alt': '#1E90FF', 'Temp': '#FF6A6A', 'Hum': '#FFA500', 'Pressure': '#98FB98', 'CanSat Cycle Δ': '#FF6347'}
+        data_labels = ['Drift', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'RSSI', 'SNR', 'Alt', 'V_Speed', 'Lng', 'Lat', 'Dist', 'Temp', 'Hum', 'Pressure']
         
         for k in self.lbl_keys:
             lbl = self.lbls[k]
             lbl.setFont(font)
             if k in colors: lbl.setStyleSheet(f"color: {colors[k]};")
+            
+            # Apply initial N/A state using inline HTML so the label color is kept for the variable name
+            if k in data_labels:
+                lbl.setText(f"{k}: <b><font color='#FF0000'>N/A</font></b>")
+            else:
+                lbl.setText(f"{k}: --")
+                
             (self.row1 if k in ['Drift', 'World T', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'MSPF', 'RSSI', 'SNR'] else self.row2).addWidget(lbl)
         
         self.layout.addLayout(self.row1); self.layout.addLayout(self.row2)
