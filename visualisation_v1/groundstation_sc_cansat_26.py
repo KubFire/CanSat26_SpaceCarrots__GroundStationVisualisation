@@ -2,7 +2,6 @@
 #V1.1.9
 #Stable - funguje mapa, funguje vizualizace, na KubFire LowPC to beha krasnych 63ms
 #Smaller screen support
-# test - vidis tenhle comment? Lucka
 
 """
 WHATS IMPLEMENTED?
@@ -49,10 +48,10 @@ TILES_PATH = os.path.join(MAP_DIR, "{z}", "{x}", "{y}.png")
 q = queue.Queue(maxsize=50) 
 
 def data_reader_worker(data_queue, target_port, baud):
-    sensor_map = {'M': 'MILLIS', 'A': 'ALT', 'B': 'TEMP', 'C': 'PRESS', 'D': 'LAT', 'E': 'LON', 'V': 'V_SPEED', 'R': 'RSSI', 'S': 'SNR'}
+    sensor_map = {'M': 'MILLIS', 'A': 'ALT', 'B': 'TEMP', 'C': 'PRESS', 'D': 'LAT', 'E': 'LON', 'V': 'V_SPEED', 'R': 'RSSI', 'S': 'SNR', 'V': 'VOLTAGE' }
     last_status = ""
     log_filename = f"cansat_log_{int(time.time())}.csv"
-    csv_keys = ['time', 'MILLIS', 'ALT', 'TEMP', 'PRESS', 'LAT', 'LON', 'V_SPEED', 'RSSI', 'SNR']
+    csv_keys = ['time', 'MILLIS', 'ALT', 'TEMP', 'PRESS', 'LAT', 'LON', 'V_SPEED', 'RSSI', 'SNR', "VOLTAGE"]
     log_file = None
     
     while True:
@@ -223,7 +222,7 @@ class GroundStation(QtWidgets.QMainWindow):
             QCheckBox::indicator:checked { background-color: #EA5A0C; border: 1px solid #EA5A0C; image: url("data:image/svg+xml;utf8,<svg width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='4' stroke-linecap='round' stroke-linejoin='round' xmlns='http://www.w3.org/2000/svg'><polyline points='20 6 9 17 4 12'/></svg>"); }
         """)
         
-        self.data = {k: [] for k in ['RSSI', 'SNR', 'TEMP', 'ALT', 'LAT', 'LON', 'GTSLP', 'U_LAT', 'PRESS', 'DIST', 'MILLIS', 'V_SPEED', 'DRIFT', 'CAN_DELTA', 'UPKEEP']}
+        self.data = {k: [] for k in ['RSSI', 'SNR', 'TEMP', 'ALT', 'LAT', 'LON', 'GTSLP', 'U_LAT', 'PRESS', 'DIST', 'MILLIS', 'V_SPEED', 'DRIFT', 'CAN_DELTA', 'UPKEEP', "VOLTAGE"]}
         self.sync_offset = 0 
         self.last_millis = 0
         self.start_time_pc = time.time()
@@ -240,11 +239,11 @@ class GroundStation(QtWidgets.QMainWindow):
         self.row1, self.row2 = QtWidgets.QHBoxLayout(), QtWidgets.QHBoxLayout()
         font = QtGui.QFont("Arial", 16)
         
-        self.lbl_keys = ['Drift', 'World T', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'MSPF', 'RSSI', 'SNR', 'Alt', 'V_Speed', 'Lng', 'Lat', 'Dist', 'Temp', 'Pressure']
+        self.lbl_keys = ['Drift', 'World T', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'MSPF', 'RSSI', 'SNR', 'Alt', 'V_Speed', 'Lng', 'Lat', 'Dist', 'Temp', 'Pressure', "Battery voltage"]
         self.lbls = {k: QtWidgets.QLabel() for k in self.lbl_keys}
         
-        colors = {'Drift': '#FF4500', 'Upkeep': '#FFFFFF', 'Ground Cycle Δ': '#FFD700', 'MSPF': '#FF00FF', 'RSSI': '#00FFFF', 'SNR': '#FFA500', 'Dist': '#9370DB', 'V_Speed': '#00FA9A', 'Alt': '#1E90FF', 'Temp': '#FF6A6A', 'Pressure': '#98FB98', 'CanSat Cycle Δ': '#FF6347'}
-        data_labels = ['Drift', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'RSSI', 'SNR', 'Alt', 'V_Speed', 'Lng', 'Lat', 'Dist', 'Temp', 'Pressure']
+        colors = {'Drift': '#FF4500', 'Upkeep': '#FFFFFF', 'Ground Cycle Δ': '#FFD700', 'MSPF': '#FF00FF', 'RSSI': '#00FFFF', 'SNR': '#FFA500', 'Dist': '#9370DB', 'V_Speed': '#00FA9A', 'Alt': '#1E90FF', 'Temp': '#FF6A6A', 'Pressure': '#98FB98', 'CanSat Cycle Δ': '#FF6347', 'Voltage': "#6B1042"}
+        data_labels = ['Drift', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'RSSI', 'SNR', 'Alt', 'V_Speed', 'Lng', 'Lat', 'Dist', 'Temp', 'Pressure', "Battery voltage"]
         
         for k in self.lbl_keys:
             lbl = self.lbls[k]
@@ -257,7 +256,7 @@ class GroundStation(QtWidgets.QMainWindow):
             else:
                 lbl.setText(f"{k}: --")
                 
-            (self.row1 if k in ['Drift', 'World T', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'MSPF', 'RSSI', 'SNR'] else self.row2).addWidget(lbl)
+            (self.row1 if k in ['Drift', 'World T', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'MSPF', 'RSSI', 'SNR', "Battery voltage"] else self.row2).addWidget(lbl)
         
         self.layout.addLayout(self.row1); self.layout.addLayout(self.row2)
 
@@ -284,7 +283,8 @@ class GroundStation(QtWidgets.QMainWindow):
             ('V_Speed', 'V_SPEED', colors['V_Speed']), 
             ('Alt', 'ALT', colors['Alt']), 
             ('Temp', 'TEMP', colors['Temp']), 
-            ('Pressure', 'PRESS', colors['Pressure'])
+            ('Pressure', 'PRESS', colors['Pressure']),
+            ('Battery voltage', 'VOLTAGE', colors['Voltage'])
         ]
         
         start_visible_keys = {'U_LAT', 'DIST', 'V_SPEED', 'ALT', 'DRIFT', 'CAN_DELTA', 'UPKEEP'}
@@ -376,7 +376,7 @@ class GroundStation(QtWidgets.QMainWindow):
             
             curr_m = d.get('MILLIS', 0)
             
-            for k in ['TEMP', 'ALT', 'LAT', 'LON', 'RSSI', 'SNR', 'PRESS', 'MILLIS', 'V_SPEED']:
+            for k in ['TEMP', 'ALT', 'LAT', 'LON', 'RSSI', 'SNR', 'PRESS', 'MILLIS', 'V_SPEED', "VOLTAGE"]:
                 self.data[k].append(d.get(k, 0.0))
             self.data['UPKEEP'].append(curr_m)
             
@@ -410,10 +410,10 @@ class GroundStation(QtWidgets.QMainWindow):
 
         if not self.data['ALT']: return
         for k in self.data: self.data[k] = self.data[k][-300:]
-        for k in ['TEMP', 'ALT', 'RSSI', 'SNR', 'PRESS', 'DIST', 'V_SPEED', 'GTSLP', 'U_LAT', 'DRIFT', 'CAN_DELTA', 'UPKEEP']:
+        for k in ['TEMP', 'ALT', 'RSSI', 'SNR', 'PRESS', 'DIST', 'V_SPEED', 'GTSLP', 'U_LAT', 'DRIFT', 'CAN_DELTA', 'UPKEEP', "VOLTAGE"]:
             if self.data[k]: self.plots[k].setData(self.data[k])
         
-        vals = {'Dist': f"{self.data['DIST'][-1]} m", 'V_Speed': f"{self.data['V_SPEED'][-1]} m/s", 'Alt': f"{self.data['ALT'][-1]} m", 'Lng': f"{self.data['LON'][-1]:.5f}", 'Lat': f"{self.data['LAT'][-1]:.5f}", 'Temp': f"{self.data['TEMP'][-1]} °C", 'Pressure': f"{self.data['PRESS'][-1]} hPa", 'RSSI': f"{self.data['RSSI'][-1]} dBm", 'SNR': f"{self.data['SNR'][-1]} dB"}
+        vals = {'Dist': f"{self.data['DIST'][-1]} m", 'V_Speed': f"{self.data['V_SPEED'][-1]} m/s", 'Alt': f"{self.data['ALT'][-1]} m", 'Lng': f"{self.data['LON'][-1]:.5f}", 'Lat': f"{self.data['LAT'][-1]:.5f}", 'Temp': f"{self.data['TEMP'][-1]} °C", 'Pressure': f"{self.data['PRESS'][-1]} hPa", 'RSSI': f"{self.data['RSSI'][-1]} dBm", 'SNR': f"{self.data['SNR'][-1]} dB", 'Battery voltage': f"{self.data['VOLTAGE'][-1]} V"}
         for k, v in vals.items(): self.lbls[k].setText(f"{k}: {v}")
 
 if __name__ == "__main__":
