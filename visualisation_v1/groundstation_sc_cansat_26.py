@@ -2,6 +2,7 @@
 #V1.1.9
 #Stable - funguje mapa, funguje vizualizace, na KubFire LowPC to beha krasnych 63ms
 #Smaller screen support
+# test - vidis tenhle comment? Lucka
 
 """
 WHATS IMPLEMENTED?
