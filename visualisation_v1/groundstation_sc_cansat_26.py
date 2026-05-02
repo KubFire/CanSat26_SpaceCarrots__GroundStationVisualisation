@@ -49,10 +49,10 @@ TILES_PATH = os.path.join(MAP_DIR, "{z}", "{x}", "{y}.png")
 q = queue.Queue(maxsize=50) 
 
 def data_reader_worker(data_queue, target_port, baud):
-    sensor_map = {'M': 'MILLIS', 'A': 'ALT', 'B': 'TEMP', 'C': 'HUM', 'D': 'PRESS', 'E': 'LAT', 'F': 'LON', 'V': 'V_SPEED', 'R': 'RSSI', 'S': 'SNR'}
+    sensor_map = {'M': 'MILLIS', 'A': 'ALT', 'B': 'TEMP', 'C': 'PRESS', 'D': 'LAT', 'E': 'LON', 'V': 'V_SPEED', 'R': 'RSSI', 'S': 'SNR'}
     last_status = ""
     log_filename = f"cansat_log_{int(time.time())}.csv"
-    csv_keys = ['time', 'MILLIS', 'ALT', 'TEMP', 'HUM', 'PRESS', 'LAT', 'LON', 'V_SPEED', 'RSSI', 'SNR']
+    csv_keys = ['time', 'MILLIS', 'ALT', 'TEMP', 'PRESS', 'LAT', 'LON', 'V_SPEED', 'RSSI', 'SNR']
     log_file = None
     
     while True:
@@ -223,7 +223,7 @@ class GroundStation(QtWidgets.QMainWindow):
             QCheckBox::indicator:checked { background-color: #EA5A0C; border: 1px solid #EA5A0C; image: url("data:image/svg+xml;utf8,<svg width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='4' stroke-linecap='round' stroke-linejoin='round' xmlns='http://www.w3.org/2000/svg'><polyline points='20 6 9 17 4 12'/></svg>"); }
         """)
         
-        self.data = {k: [] for k in ['RSSI', 'SNR', 'TEMP', 'ALT', 'LAT', 'LON', 'GTSLP', 'U_LAT', 'HUM', 'PRESS', 'DIST', 'MILLIS', 'V_SPEED', 'DRIFT', 'CAN_DELTA', 'UPKEEP']}
+        self.data = {k: [] for k in ['RSSI', 'SNR', 'TEMP', 'ALT', 'LAT', 'LON', 'GTSLP', 'U_LAT', 'PRESS', 'DIST', 'MILLIS', 'V_SPEED', 'DRIFT', 'CAN_DELTA', 'UPKEEP']}
         self.sync_offset = 0 
         self.last_millis = 0
         self.start_time_pc = time.time()
@@ -240,11 +240,11 @@ class GroundStation(QtWidgets.QMainWindow):
         self.row1, self.row2 = QtWidgets.QHBoxLayout(), QtWidgets.QHBoxLayout()
         font = QtGui.QFont("Arial", 16)
         
-        self.lbl_keys = ['Drift', 'World T', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'MSPF', 'RSSI', 'SNR', 'Alt', 'V_Speed', 'Lng', 'Lat', 'Dist', 'Temp', 'Hum', 'Pressure']
+        self.lbl_keys = ['Drift', 'World T', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'MSPF', 'RSSI', 'SNR', 'Alt', 'V_Speed', 'Lng', 'Lat', 'Dist', 'Temp', 'Pressure']
         self.lbls = {k: QtWidgets.QLabel() for k in self.lbl_keys}
         
-        colors = {'Drift': '#FF4500', 'Upkeep': '#FFFFFF', 'Ground Cycle Δ': '#FFD700', 'MSPF': '#FF00FF', 'RSSI': '#00FFFF', 'SNR': '#FFFFFF', 'Dist': '#9370DB', 'V_Speed': '#00FA9A', 'Alt': '#1E90FF', 'Temp': '#FF6A6A', 'Hum': '#FFA500', 'Pressure': '#98FB98', 'CanSat Cycle Δ': '#FF6347'}
-        data_labels = ['Drift', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'RSSI', 'SNR', 'Alt', 'V_Speed', 'Lng', 'Lat', 'Dist', 'Temp', 'Hum', 'Pressure']
+        colors = {'Drift': '#FF4500', 'Upkeep': '#FFFFFF', 'Ground Cycle Δ': '#FFD700', 'MSPF': '#FF00FF', 'RSSI': '#00FFFF', 'SNR': '#FFA500', 'Dist': '#9370DB', 'V_Speed': '#00FA9A', 'Alt': '#1E90FF', 'Temp': '#FF6A6A', 'Pressure': '#98FB98', 'CanSat Cycle Δ': '#FF6347'}
+        data_labels = ['Drift', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'RSSI', 'SNR', 'Alt', 'V_Speed', 'Lng', 'Lat', 'Dist', 'Temp', 'Pressure']
         
         for k in self.lbl_keys:
             lbl = self.lbls[k]
@@ -284,7 +284,6 @@ class GroundStation(QtWidgets.QMainWindow):
             ('V_Speed', 'V_SPEED', colors['V_Speed']), 
             ('Alt', 'ALT', colors['Alt']), 
             ('Temp', 'TEMP', colors['Temp']), 
-            ('Humidity', 'HUM', colors['Hum']), 
             ('Pressure', 'PRESS', colors['Pressure'])
         ]
         
@@ -379,7 +378,6 @@ class GroundStation(QtWidgets.QMainWindow):
             
             for k in ['TEMP', 'ALT', 'LAT', 'LON', 'RSSI', 'SNR', 'PRESS', 'MILLIS', 'V_SPEED']:
                 self.data[k].append(d.get(k, 0.0))
-            self.data['HUM'].append(d.get('HUM', 0.0))
             self.data['UPKEEP'].append(curr_m)
             
             can_delta = int(curr_m - self.last_millis) if self.last_millis != 0 else 0
@@ -412,10 +410,10 @@ class GroundStation(QtWidgets.QMainWindow):
 
         if not self.data['ALT']: return
         for k in self.data: self.data[k] = self.data[k][-300:]
-        for k in ['TEMP', 'ALT', 'RSSI', 'SNR', 'HUM', 'PRESS', 'DIST', 'V_SPEED', 'GTSLP', 'U_LAT', 'DRIFT', 'CAN_DELTA', 'UPKEEP']:
+        for k in ['TEMP', 'ALT', 'RSSI', 'SNR', 'PRESS', 'DIST', 'V_SPEED', 'GTSLP', 'U_LAT', 'DRIFT', 'CAN_DELTA', 'UPKEEP']:
             if self.data[k]: self.plots[k].setData(self.data[k])
         
-        vals = {'Dist': f"{self.data['DIST'][-1]} m", 'V_Speed': f"{self.data['V_SPEED'][-1]} m/s", 'Alt': f"{self.data['ALT'][-1]} m", 'Lng': f"{self.data['LON'][-1]:.5f}", 'Lat': f"{self.data['LAT'][-1]:.5f}", 'Temp': f"{self.data['TEMP'][-1]} °C", 'Hum': f"{self.data['HUM'][-1]} %", 'Pressure': f"{self.data['PRESS'][-1]} hPa", 'RSSI': f"{self.data['RSSI'][-1]} dBm", 'SNR': f"{self.data['SNR'][-1]} dB"}
+        vals = {'Dist': f"{self.data['DIST'][-1]} m", 'V_Speed': f"{self.data['V_SPEED'][-1]} m/s", 'Alt': f"{self.data['ALT'][-1]} m", 'Lng': f"{self.data['LON'][-1]:.5f}", 'Lat': f"{self.data['LAT'][-1]:.5f}", 'Temp': f"{self.data['TEMP'][-1]} °C", 'Pressure': f"{self.data['PRESS'][-1]} hPa", 'RSSI': f"{self.data['RSSI'][-1]} dBm", 'SNR': f"{self.data['SNR'][-1]} dB"}
         for k, v in vals.items(): self.lbls[k].setText(f"{k}: {v}")
 
 if __name__ == "__main__":
