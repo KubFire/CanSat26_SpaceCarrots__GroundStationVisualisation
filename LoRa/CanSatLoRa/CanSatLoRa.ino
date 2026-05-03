@@ -19,6 +19,7 @@ float latitude = 49.795000;
 float longitude = 16.680000;
 float battery_voltage = 4.5;
 float vertical_speed = 0.00;
+int state = 0;
 
 void setup() {
   Serial.begin(115200);
@@ -68,6 +69,8 @@ void loop() {
   LoRa.print(";E"); LoRa.print(longitude, 6);
   LoRa.print(";F"); LoRa.print(battery_voltage, 2);
   LoRa.print(";V"); LoRa.print(vertical_speed, 2);
+  LoRa.print(";T"); LoRa.print(state);
+
   
   LoRa.endPacket();
 

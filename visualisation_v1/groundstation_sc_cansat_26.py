@@ -48,7 +48,7 @@ TILES_PATH = os.path.join(MAP_DIR, "{z}", "{x}", "{y}.png")
 q = queue.Queue(maxsize=50)
 
 def data_reader_worker(data_queue, target_port, baud):
-    sensor_map = {'M': 'MILLIS', 'A': 'ALT', 'B': 'TEMP', 'C': 'PRESS', 'D': 'LAT', 'E': 'LON', 'F': 'VOLTAGE', 'V': 'V_SPEED', 'R': 'RSSI', 'S': 'SNR' }
+    sensor_map = {'M': 'MILLIS', 'A': 'ALT', 'B': 'TEMP', 'C': 'PRESS', 'D': 'LAT', 'E': 'LON', 'F': 'VOLTAGE', 'V': 'V_SPEED', 'R': 'RSSI', 'S': 'SNR', 'T':'STATE'}
     last_status = ""
     log_filename = f"cansat_log_{int(time.time())}.csv"
     csv_keys = ['time', 'MILLIS', 'ALT', 'TEMP', 'PRESS', 'LAT', 'LON', 'V_SPEED', 'RSSI', 'SNR', "VOLTAGE"]
@@ -222,7 +222,7 @@ class GroundStation(QtWidgets.QMainWindow):
             QCheckBox::indicator:checked { background-color: #EA5A0C; border: 1px solid #EA5A0C; image: url("data:image/svg+xml;utf8,<svg width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='4' stroke-linecap='round' stroke-linejoin='round' xmlns='http://www.w3.org/2000/svg'><polyline points='20 6 9 17 4 12'/></svg>"); }
         """)
         
-        self.data = {k: [] for k in ['RSSI', 'SNR', 'TEMP', 'ALT', 'LAT', 'LON', 'GTSLP', 'U_LAT', 'PRESS', 'DIST', 'MILLIS', 'V_SPEED', 'DRIFT', 'CAN_DELTA', 'UPKEEP', "VOLTAGE"]}
+        self.data = {k: [] for k in ['RSSI', 'SNR', 'TEMP', 'ALT', 'LAT', 'LON', 'GTSLP', 'U_LAT', 'PRESS', 'DIST', 'MILLIS', 'V_SPEED', 'DRIFT', 'CAN_DELTA', 'UPKEEP', "VOLTAGE", "STATE"]}
         self.sync_offset = 0 
         self.last_millis = 0
         self.start_time_pc = time.time()
@@ -239,8 +239,11 @@ class GroundStation(QtWidgets.QMainWindow):
         self.row1, self.row2 = QtWidgets.QHBoxLayout(), QtWidgets.QHBoxLayout()
         font = QtGui.QFont("Arial", 16)
         
-        self.lbl_keys = ['Drift', 'World T', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'MSPF', 'RSSI', 'SNR', 'Alt', 'V_Speed', 'Lng', 'Lat', 'Dist', 'Temp', 'Pressure', "Battery voltage"]
+        self.lbl_keys = ['Drift', 'World T', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'MSPF', 'RSSI', 'SNR', 'Alt', 'V_Speed', 'Lng', 'Lat', 'Dist', 'Temp', 'Pressure', "Battery voltage", "State"]
         self.lbls = {k: QtWidgets.QLabel() for k in self.lbl_keys}
+
+        self.lbls['State'].setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.lbls['State'].setFixedSize(140, 40)
         
         colors = {'Drift': '#FF4500', 'Upkeep': '#FFFFFF', 'Ground Cycle Δ': '#FFD700', 'MSPF': '#FF00FF', 'RSSI': '#00FFFF', 'SNR': '#FFA500', 'Dist': '#9370DB', 'V_Speed': '#00FA9A', 'Alt': '#1E90FF', 'Temp': '#FF6A6A', 'Pressure': '#98FB98', 'CanSat Cycle Δ': '#FF6347', 'Voltage': "#6B1042"}
         data_labels = ['Drift', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'RSSI', 'SNR', 'Alt', 'V_Speed', 'Lng', 'Lat', 'Dist', 'Temp', 'Pressure', "Battery voltage"]
@@ -250,8 +253,11 @@ class GroundStation(QtWidgets.QMainWindow):
             lbl.setFont(font)
             if k in colors: lbl.setStyleSheet(f"color: {colors[k]};")
             
+            if k == 'State':
+                lbl.setText("IDLE") # Výchozí text
+                lbl.setStyleSheet("background-color: #1E90FF; color: white; font-weight: bold; border-radius: 8px;")
             # Apply initial N/A state using inline HTML so the label color is kept for the variable name
-            if k in data_labels:
+            elif k in data_labels:
                 lbl.setText(f"{k}: <b><font color='#FF0000'>N/A</font></b>")
             else:
                 lbl.setText(f"{k}: --")
@@ -289,6 +295,12 @@ class GroundStation(QtWidgets.QMainWindow):
         
         start_visible_keys = {'U_LAT', 'DIST', 'V_SPEED', 'ALT', 'DRIFT', 'CAN_DELTA', 'UPKEEP'}
         
+        self.state_map = {
+            0: ("IDLE", "#1E90FF"),
+            1: ("LAUNCH", "#FF0000"),
+            2: ("DEPLOYMENT", "#00AA00")
+}
+
         checkboxes = []
         for i, (name, key, col) in enumerate(graph_configs):
             pw = pg.PlotWidget(title=name)
@@ -360,6 +372,12 @@ class GroundStation(QtWidgets.QMainWindow):
             self.sync_offset = (time.time() - self.start_time_pc) * 1000 - self.data['MILLIS'][-1]
             self.msg_log.append("Drift Synced.")
 
+    def update_state_label(self, state_num):
+        text, color = self.state_map.get(state_num, ("", "#555555"))
+
+        self.lbls['State'].setText(text)
+        self.lbls['State'].setStyleSheet(f"background-color: {color}; color: white; font-weight: bold; padding: 5px; border-radius: 8px;")
+
     def update_ui(self):
         now = time.time()
         ui_ms = (now - self.last_ui_t) * 1000
@@ -392,9 +410,14 @@ class GroundStation(QtWidgets.QMainWindow):
             
             dist = round(haversine((d.get('LAT', 0), d.get('LON', 0)), (target_lat, target_lon))*1000, 1) if d.get('LAT') else 0.0
             self.data['DIST'].append(dist)
+
+            self.data['STATE'].append(d.get('STATE', self.data['STATE'][-1] if self.data['STATE'] else 0))
+            self.update_state_label(d.get('STATE', 0))
             
             self.last_millis = curr_m
-            last_packet = d 
+            last_packet = d
+
+    
 
         if last_packet:
             curr_m = last_packet.get('MILLIS', 0)
