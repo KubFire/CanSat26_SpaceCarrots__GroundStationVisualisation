@@ -45,10 +45,10 @@ BASE_DIR = os.path.dirname(CURRENT_DIR)
 MAP_DIR = os.path.join(BASE_DIR, "map_tiles")
 TILES_PATH = os.path.join(MAP_DIR, "{z}", "{x}", "{y}.png")
 
-q = queue.Queue(maxsize=50) 
+q = queue.Queue(maxsize=50)
 
 def data_reader_worker(data_queue, target_port, baud):
-    sensor_map = {'M': 'MILLIS', 'A': 'ALT', 'B': 'TEMP', 'C': 'PRESS', 'D': 'LAT', 'E': 'LON', 'V': 'V_SPEED', 'R': 'RSSI', 'S': 'SNR', 'V': 'VOLTAGE' }
+    sensor_map = {'M': 'MILLIS', 'A': 'ALT', 'B': 'TEMP', 'C': 'PRESS', 'D': 'LAT', 'E': 'LON', 'F': 'VOLTAGE', 'V': 'V_SPEED', 'R': 'RSSI', 'S': 'SNR' }
     last_status = ""
     log_filename = f"cansat_log_{int(time.time())}.csv"
     csv_keys = ['time', 'MILLIS', 'ALT', 'TEMP', 'PRESS', 'LAT', 'LON', 'V_SPEED', 'RSSI', 'SNR', "VOLTAGE"]
@@ -297,6 +297,7 @@ class GroundStation(QtWidgets.QMainWindow):
             self.plots[key] = pw.plot(pen=col)
             pw.setVisible(key in start_visible_keys)
             self.graph_stack.addWidget(pw, stretch=1)
+            self.msg_log = QtWidgets.QTextEdit()
             chk = QtWidgets.QCheckBox(name)
             chk.setChecked(key in start_visible_keys)
             chk.toggled.connect(lambda checked, w=pw: w.setVisible(checked))

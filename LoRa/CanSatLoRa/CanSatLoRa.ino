@@ -17,6 +17,7 @@ float humidity = 40.2;
 float pressure = 1011.15;
 float latitude = 49.795000;
 float longitude = 16.680000;
+float battery_voltage = 4.5;
 float vertical_speed = 0.00;
 
 void setup() {
@@ -62,10 +63,10 @@ void loop() {
   LoRa.print("M"); LoRa.print(now);
   LoRa.print(";A"); LoRa.print(altitude, 2);
   LoRa.print(";B"); LoRa.print(temperature, 2);
-  LoRa.print(";C"); LoRa.print(humidity, 1);
-  LoRa.print(";D"); LoRa.print(pressure, 2);
-  LoRa.print(";E"); LoRa.print(latitude, 6);
-  LoRa.print(";F"); LoRa.print(longitude, 6);
+  LoRa.print(";C"); LoRa.print(pressure, 2);
+  LoRa.print(";D"); LoRa.print(latitude, 6);
+  LoRa.print(";E"); LoRa.print(longitude, 6);
+  LoRa.print(";F"); LoRa.print(battery_voltage, 2);
   LoRa.print(";V"); LoRa.print(vertical_speed, 2);
   
   LoRa.endPacket();
