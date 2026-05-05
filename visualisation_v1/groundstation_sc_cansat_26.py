@@ -29,9 +29,12 @@ from PyQt6 import QtWidgets, QtCore, QtGui
 import pyqtgraph as pg
 from haversine import haversine
 import contextily as cx
+import math
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+
+
 
 # --- CONFIG ---
 SERIAL_PORT = "AUTO" # Set to "AUTO" for auto-detection, or specify a port like "COM8"
@@ -47,11 +50,29 @@ TILES_PATH = os.path.join(MAP_DIR, "{z}", "{x}", "{y}.png")
 
 q = queue.Queue(maxsize=50)
 
+def calculate_bearing(lat1, lon1, lat2, lon2):
+    """Vypočítá azimut mezi dvěma body v stupních (0-360)."""
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    delta_lambda = math.radians(lon2 - lon1)
+    y = math.sin(delta_lambda) * math.cos(phi2)
+    x = math.cos(phi1) * math.sin(phi2) - \
+        math.sin(phi1) * math.cos(phi2) * math.cos(delta_lambda)
+    return (math.degrees(math.atan2(y, x)) + 360) % 360
+
+def calculate_h_speed(lat1, lon1, lat2, lon2, millis1, millis2):
+    """Vypočítá horizontální rychlost v m/s pomocí Haversine a MILLIS."""
+    d_time = (millis2 - millis1) / 1000.0
+    if d_time <= 0: return 0.0
+    # haversine vrací km, násobíme 1000 pro metry
+    dist = haversine((lat1, lon1), (lat2, lon2)) * 1000 
+    return dist / d_time
+
+
 def data_reader_worker(data_queue, target_port, baud):
     sensor_map = {'M': 'MILLIS', 'A': 'ALT', 'B': 'TEMP', 'C': 'PRESS', 'D': 'LAT', 'E': 'LON', 'F': 'VOLTAGE', 'V': 'V_SPEED', 'R': 'RSSI', 'S': 'SNR', 'T':'STATE'}
     last_status = ""
     log_filename = f"cansat_log_{int(time.time())}.csv"
-    csv_keys = ['time', 'MILLIS', 'ALT', 'TEMP', 'PRESS', 'LAT', 'LON', 'V_SPEED', 'RSSI', 'SNR', "VOLTAGE"]
+    csv_keys = ['time', 'MILLIS', 'ALT', 'TEMP', 'PRESS', 'LAT', 'LON', 'V_SPEED', 'RSSI', 'SNR', "VOLTAGE", 'H_SPEED', 'T_SPEED', 'AZIM_F', 'AZIM_T']
     log_file = None
     
     while True:
@@ -108,9 +129,28 @@ def data_reader_worker(data_queue, target_port, baud):
                             continue
                         try: data[sensor_map.get(v, v)] = float(item[1:])
                         except: continue
+                    lat = data.get('LAT', 0.0)
+                    lon = data.get('LON', 0.0)
+                    millis = data.get('MILLIS', 0.0)
+                    v_speed = data.get('V_SPEED', 0.0)
                     
+                    data['AZIM_T'] = calculate_bearing(lat, lon, target_lat, target_lon)
+                    data['H_SPEED'] = 0.0
+                    data['T_SPEED'] = 0.0
+                    data['AZIM_F'] = 0.0
+
+                    # Výpočet z historie (pokud už máme v self.data nějaký bod)
+                    if len(self.data['LAT']) > 0:
+                        p_lat, p_lon = self.data['LAT'][-1], self.data['LON'][-1]
+                        p_m = self.data['MILLIS'][-1]
+                        
+                        h_s = calculate_h_speed(p_lat, p_lon, lat, lon, p_m, millis)
+                        data['H_SPEED'] = round(h_s, 2)
+                        data['T_SPEED'] = round(math.sqrt(h_s**2 + v_speed**2), 2)
+                        data['AZIM_F'] = round(calculate_bearing(p_lat, p_lon, lat, lon), 1)
+
                     data_queue.put(data)
-                    
+
                     # Write to CSV
                     row = [str(data.get(k, "")) for k in csv_keys]
                     log_file.write(",".join(row) + "\n")
@@ -222,7 +262,8 @@ class GroundStation(QtWidgets.QMainWindow):
             QCheckBox::indicator:checked { background-color: #EA5A0C; border: 1px solid #EA5A0C; image: url("data:image/svg+xml;utf8,<svg width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='4' stroke-linecap='round' stroke-linejoin='round' xmlns='http://www.w3.org/2000/svg'><polyline points='20 6 9 17 4 12'/></svg>"); }
         """)
         
-        self.data = {k: [] for k in ['RSSI', 'SNR', 'TEMP', 'ALT', 'LAT', 'LON', 'GTSLP', 'U_LAT', 'PRESS', 'DIST', 'MILLIS', 'V_SPEED', 'DRIFT', 'CAN_DELTA', 'UPKEEP', "VOLTAGE", "STATE"]}
+        # Najdi self.data a přidej tam tyto klíče 
+        self.data = {k: [] for k in ['RSSI', 'SNR', 'TEMP', 'ALT', 'LAT', 'LON', 'GTSLP', 'U_LAT', 'PRESS', 'DIST', 'MILLIS', 'V_SPEED', 'DRIFT', 'CAN_DELTA', 'UPKEEP', "VOLTAGE", "STATE",'H_SPEED', 'T_SPEED', 'AZIM_F']}
         self.sync_offset = 0 
         self.last_millis = 0
         self.start_time_pc = time.time()
@@ -239,7 +280,10 @@ class GroundStation(QtWidgets.QMainWindow):
         self.row1, self.row2 = QtWidgets.QHBoxLayout(), QtWidgets.QHBoxLayout()
         font = QtGui.QFont("Arial", 16)
         
-        self.lbl_keys = ['Drift', 'World T', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'MSPF', 'RSSI', 'SNR', 'Alt', 'V_Speed', 'Lng', 'Lat', 'Dist', 'Temp', 'Pressure', "Battery voltage", "State"]
+        self.lbl_keys = ['Drift', 'World T', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 
+                 'MSPF', 'RSSI', 'SNR', 'Alt', 'V_Speed', 'H_Speed', 'Total_Speed', 
+                 'Lng', 'Lat', 'Dist', 'Azim_Target', 'Azim_Flight', 'Temp', 
+                 'Pressure', "Battery voltage", "State"]
         self.lbls = {k: QtWidgets.QLabel() for k in self.lbl_keys}
 
         self.lbls['State'].setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
@@ -290,7 +334,10 @@ class GroundStation(QtWidgets.QMainWindow):
             ('Alt', 'ALT', colors['Alt']), 
             ('Temp', 'TEMP', colors['Temp']), 
             ('Pressure', 'PRESS', colors['Pressure']),
-            ('Battery voltage', 'VOLTAGE', colors['Voltage'])
+            ('Battery voltage', 'VOLTAGE', colors['Voltage']),
+            ('H-Speed', 'H_SPEED', '#FFD700'),     # Zlatá
+            ('Total Speed', 'T_SPEED', '#FFFFFF'), # Bílá
+            ('Flight Azimuth', 'AZIM_F', '#00FF00') # Zelená
         ]
         
         start_visible_keys = {'U_LAT', 'DIST', 'V_SPEED', 'ALT', 'DRIFT', 'CAN_DELTA', 'UPKEEP'}
@@ -432,10 +479,39 @@ class GroundStation(QtWidgets.QMainWindow):
             if last_packet.get('LAT'):
                 self.map_w.update_position(last_packet['LAT'], last_packet['LON'])
 
+            if len(self.data['LAT']) >= 2:
+                # Načtení dat z historie (poslední a předposlední)
+                curr_lat, curr_lon = self.data['LAT'][-1], self.data['LON'][-1]
+                prev_lat, prev_lon = self.data['LAT'][-2], self.data['LON'][-2]
+                prev_m = self.data['MILLIS'][-2] # curr_m už máme nahoře
+
+                # 1. Výpočet azimutu k cíli (z aktuální polohy k target_lat z CONFIGu)
+                azim_target = calculate_bearing(curr_lat, curr_lon, target_lat, target_lon)
+                
+                # 2. Výpočet azimutu směru letu (změna polohy v čase)
+                azim_flight = calculate_bearing(prev_lat, prev_lon, curr_lat, curr_lon)
+                
+                # 3. Výpočet horizontální rychlosti
+                v_h = calculate_h_speed(prev_lat, prev_lon, curr_lat, curr_lon, prev_m, curr_m)
+                
+                # 4. Celková rychlost (v_v posílá Arduino jako 'V_SPEED')
+                v_v = self.data['V_SPEED'][-1]
+                v_total = math.sqrt(v_h**2 + v_v**2)
+
+                # 5. Aktualizace nových štítků (labels)
+                self.lbls['Azim_Target'].setText(f"Target Brg: {azim_target:.1f}°")
+                self.lbls['Azim_Flight'].setText(f"Flight Dir: {azim_flight:.1f}°")
+                self.lbls['H_Speed'].setText(f"H-Speed: {v_h:.2f} m/s")
+                self.lbls['Total_Speed'].setText(f"Total Speed: {v_total:.2f} m/s")
+                self.data['H_SPEED'].append(v_h)
+                self.data['T_SPEED'].append(v_total)
+                self.data['AZIM_F'].append(azim_flight)
+
         if not self.data['ALT']: return
         for k in self.data: self.data[k] = self.data[k][-300:]
-        for k in ['TEMP', 'ALT', 'RSSI', 'SNR', 'PRESS', 'DIST', 'V_SPEED', 'GTSLP', 'U_LAT', 'DRIFT', 'CAN_DELTA', 'UPKEEP', "VOLTAGE"]:
-            if self.data[k]: self.plots[k].setData(self.data[k])
+        for k in ['TEMP', 'ALT', 'RSSI', 'SNR', 'PRESS', 'DIST', 'V_SPEED', 'H_SPEED', 'T_SPEED', 'AZIM_F', 'GTSLP', 'U_LAT', 'DRIFT', 'CAN_DELTA', 'UPKEEP', "VOLTAGE"]:
+            if self.data[k]: 
+                self.plots[k].setData(self.data[k])
         
         vals = {'Dist': f"{self.data['DIST'][-1]} m", 'V_Speed': f"{self.data['V_SPEED'][-1]} m/s", 'Alt': f"{self.data['ALT'][-1]} m", 'Lng': f"{self.data['LON'][-1]:.5f}", 'Lat': f"{self.data['LAT'][-1]:.5f}", 'Temp': f"{self.data['TEMP'][-1]} °C", 'Pressure': f"{self.data['PRESS'][-1]} hPa", 'RSSI': f"{self.data['RSSI'][-1]} dBm", 'SNR': f"{self.data['SNR'][-1]} dB", 'Battery voltage': f"{self.data['VOLTAGE'][-1]} V"}
         for k, v in vals.items(): self.lbls[k].setText(f"{k}: {v}")
