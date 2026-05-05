@@ -13,7 +13,6 @@ const int IRQ_PIN   = 21; // DIO0
 // Globální konstanty
 float altitude = 120.50;
 float temperature = 22.35;
-float humidity = 40.2;
 float pressure = 1011.15;
 float latitude = 49.795000;
 float longitude = 16.680000;
