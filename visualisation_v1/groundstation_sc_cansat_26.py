@@ -170,6 +170,20 @@ class MapWidget(FigureCanvas):
         self.resize_timer = QtCore.QTimer()
         self.resize_timer.setSingleShot(True)
         self.resize_timer.timeout.connect(self.render_full_map)
+
+    def update_navigation(self, flight_azim, target_azim, wind_azim):
+        # Převod na radiány pro polar plot
+        f_rad = math.radians(flight_azim)
+        t_rad = math.radians(target_azim)
+        w_rad = math.radians(wind_azim)
+    
+        # Nastavení dat (od středu 0 k okraji 1)
+        self.arrow_flight.set_data([f_rad, f_rad], [0, 1])
+        self.arrow_target.set_data([t_rad, t_rad], [0, 0.9])
+        self.arrow_wind.set_data([w_rad, w_rad], [0, 0.8])
+        
+        # Blit/Draw (v závislosti na tvém nastavení)
+        self.draw_idle()
         
     def setup_plot(self):
         self.fig.patch.set_facecolor('#121212')
@@ -185,6 +199,19 @@ class MapWidget(FigureCanvas):
         self.mpl_connect('draw_event', self.on_draw)
         self.render_full_map()
         self.fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+
+        self.nav_group = self.axes.inset_axes([0.02, 0.02, 0.2, 0.2], projection='polar')
+        self.nav_group.set_facecolor('none')
+        self.nav_group.set_theta_zero_location('N') # Sever nahoře
+        self.nav_group.set_theta_direction(-1)      # Po směru hodinových ručiček
+        self.nav_group.grid(False)
+        self.nav_group.set_xticklabels([])
+        self.nav_group.set_yticklabels([])
+
+        # Vytvoření šipek (rysek)
+        self.arrow_flight, = self.nav_group.plot([], [], color='#EA5A0C', linewidth=3, label='Let')
+        self.arrow_target, = self.nav_group.plot([], [], color='#00FF00', linewidth=3, linestyle='--', label='Cíl')
+        self.arrow_wind,   = self.nav_group.plot([], [], color='#00FFFF', linewidth=2, label='Vítr')
 
     def on_draw(self, event):
         self.bg_cache = self.copy_from_bbox(self.axes.bbox)
@@ -465,6 +492,15 @@ class GroundStation(QtWidgets.QMainWindow):
             for k, v in new_vals.items():
                 if k in self.lbls:
                     self.lbls[k].setText(f"{k}: {v}")
+
+            if self.data['LAT']:
+                # Získání posledních hodnot (pokud neexistují, použij 0)
+                f_az = azim_flight if 'azim_flight' in locals() else 0
+                t_az = self.data['TARGET_AZIM'][-1] if self.data['TARGET_AZIM'] else 0
+                w_az = self.data['W_AZIM'][-1] if self.data['W_AZIM'] else 0
+                
+                # Aktualizace widgetu
+                self.map_w.update_navigation(f_az, t_az, w_az)
 
 
     
