@@ -40,7 +40,6 @@ from matplotlib.figure import Figure
 SERIAL_PORT = "AUTO" # Set to "AUTO" for auto-detection, or specify a port like "COM8"
 BAUD_RATE = 115200
 ground_lat, ground_lon = 49.7950, 16.6800 
-target_lat, target_lon = 49.7985833, 16.6877778
 map_scale = 0.02 
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -69,11 +68,12 @@ def calculate_h_speed(lat1, lon1, lat2, lon2, millis1, millis2):
 
 
 def data_reader_worker(data_queue, target_port, baud):
-    sensor_map = {'M': 'MILLIS', 'A': 'ALT', 'B': 'TEMP', 'C': 'PRESS', 'D': 'LAT', 'E': 'LON', 'F': 'VOLTAGE', 'V': 'V_SPEED', 'R': 'RSSI', 'S': 'SNR', 'T':'STATE'}
+    # Upravte tento řádek (přidána G a H)
+    sensor_map = {'M': 'MILLIS', 'A': 'ALT', 'B': 'TEMP', 'C': 'PRESS', 'D': 'LAT', 'E': 'LON', 'F': 'VOLTAGE', 'V': 'V_SPEED', 'R': 'RSSI', 'S': 'SNR', 'T':'STATE','G': 'TARGET_DIST', 'H': 'TARGET_AZIM', 'I': 'W_SPD', 'J': 'W_AZIM', 'K': 'V_WIN', 'L': 'A_WIN'}
     last_status = ""
     log_filename = f"cansat_log_{int(time.time())}.csv"
-    csv_keys = ['time', 'MILLIS', 'ALT', 'TEMP', 'PRESS', 'LAT', 'LON', 'V_SPEED', 'RSSI', 'SNR', "VOLTAGE", 'H_SPEED', 'T_SPEED', 'AZIM_F', 'AZIM_T']
-    log_file = None
+    # Uprav tento řádek v data_reader_worker:
+    csv_keys = ['time', 'MILLIS', 'ALT', 'TEMP', 'PRESS', 'LAT', 'LON', 'V_SPEED', 'RSSI', 'SNR', 'VOLTAGE', 'H_SPEED', 'T_SPEED', 'AZIM_F', 'TARGET_DIST', 'TARGET_AZIM'] # Tyto dvě hodnoty posílá CanSat
     
     while True:
         port_to_open = target_port
@@ -129,25 +129,12 @@ def data_reader_worker(data_queue, target_port, baud):
                             continue
                         try: data[sensor_map.get(v, v)] = float(item[1:])
                         except: continue
-                    lat = data.get('LAT', 0.0)
-                    lon = data.get('LON', 0.0)
-                    millis = data.get('MILLIS', 0.0)
-                    v_speed = data.get('V_SPEED', 0.0)
                     
-                    data['AZIM_T'] = calculate_bearing(lat, lon, target_lat, target_lon)
-                    data['H_SPEED'] = 0.0
-                    data['T_SPEED'] = 0.0
-                    data['AZIM_F'] = 0.0
-
-                    # Výpočet z historie (pokud už máme v self.data nějaký bod)
-                    if len(self.data['LAT']) > 0:
-                        p_lat, p_lon = self.data['LAT'][-1], self.data['LON'][-1]
-                        p_m = self.data['MILLIS'][-1]
-                        
-                        h_s = calculate_h_speed(p_lat, p_lon, lat, lon, p_m, millis)
-                        data['H_SPEED'] = round(h_s, 2)
-                        data['T_SPEED'] = round(math.sqrt(h_s**2 + v_speed**2), 2)
-                        data['AZIM_F'] = round(calculate_bearing(p_lat, p_lon, lat, lon), 1)
+                    data['H_SPEED'] = data.get('H_SPEED', 0.0)
+                    data['T_SPEED'] = data.get('T_SPEED', 0.0)
+                    data['AZIM_F'] = data.get('AZIM_F', 0.0)
+                    data['TARGET_DIST'] = data.get('TARGET_DIST', 0.0)
+                    data['TARGET_AZIM'] = data.get('TARGET_AZIM', 0.0)
 
                     data_queue.put(data)
 
@@ -263,10 +250,10 @@ class GroundStation(QtWidgets.QMainWindow):
         """)
         
         # Najdi self.data a přidej tam tyto klíče 
-        self.data = {k: [] for k in ['RSSI', 'SNR', 'TEMP', 'ALT', 'LAT', 'LON', 'GTSLP', 'U_LAT', 'PRESS', 'DIST', 'MILLIS', 'V_SPEED', 'DRIFT', 'CAN_DELTA', 'UPKEEP', "VOLTAGE", "STATE",'H_SPEED', 'T_SPEED', 'AZIM_F']}
+        self.data = {k: [] for k in ['RSSI', 'SNR', 'TEMP', 'ALT', 'LAT', 'LON', 'GTSLP', 'U_LAT', 'PRESS', 'DIST', 'MILLIS', 'V_SPEED', 'DRIFT', 'CAN_DELTA', 'UPKEEP', "VOLTAGE", "STATE",'H_SPEED', 'T_SPEED', 'AZIM_F', "V_WIN", "A_WIN", "W_AZIM", "W_SPD",'TARGET_DIST', 'TARGET_AZIM']}
         self.sync_offset = 0 
         self.last_millis = 0
-        self.start_time_pc = time.time()
+        self.start_time_pc = time.time() 
 
         self.main_widget = QtWidgets.QWidget()
         self.setCentralWidget(self.main_widget)
@@ -277,17 +264,17 @@ class GroundStation(QtWidgets.QMainWindow):
         title_lbl.setStyleSheet("color: #EA5A0C;")
         self.layout.addWidget(title_lbl, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
 
-        self.row1, self.row2 = QtWidgets.QHBoxLayout(), QtWidgets.QHBoxLayout()
+        self.row1, self.row2, self.row3 = QtWidgets.QHBoxLayout(), QtWidgets.QHBoxLayout(), QtWidgets.QHBoxLayout()
         font = QtGui.QFont("Arial", 16)
         
         self.lbl_keys = ['Drift', 'World T', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 
                  'MSPF', 'RSSI', 'SNR', 'Alt', 'V_Speed', 'H_Speed', 'Total_Speed', 
                  'Lng', 'Lat', 'Dist', 'Azim_Target', 'Azim_Flight', 'Temp', 
-                 'Pressure', "Battery voltage", "State"]
+                 'Pressure', "Battery voltage", "State", 'Wind_Spd', 'Wind_Azim', 'V_Win', 'A_Win']
         self.lbls = {k: QtWidgets.QLabel() for k in self.lbl_keys}
 
         self.lbls['State'].setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.lbls['State'].setFixedSize(140, 40)
+        self.lbls['State'].setMinimumWidth(100)
         
         colors = {'Drift': '#FF4500', 'Upkeep': '#FFFFFF', 'Ground Cycle Δ': '#FFD700', 'MSPF': '#FF00FF', 'RSSI': '#00FFFF', 'SNR': '#FFA500', 'Dist': '#9370DB', 'V_Speed': '#00FA9A', 'Alt': '#1E90FF', 'Temp': '#FF6A6A', 'Pressure': '#98FB98', 'CanSat Cycle Δ': '#FF6347', 'Voltage': "#6B1042"}
         data_labels = ['Drift', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'RSSI', 'SNR', 'Alt', 'V_Speed', 'Lng', 'Lat', 'Dist', 'Temp', 'Pressure', "Battery voltage"]
@@ -306,9 +293,17 @@ class GroundStation(QtWidgets.QMainWindow):
             else:
                 lbl.setText(f"{k}: --")
                 
-            (self.row1 if k in ['Drift', 'World T', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'MSPF', 'RSSI', 'SNR', "Battery voltage"] else self.row2).addWidget(lbl)
+            # 1. ŘÁDEK: Systémové věci a čas
+            if k in ['Drift', 'World T', 'Upkeep', 'CanSat Cycle Δ', 'Ground Cycle Δ', 'MSPF', 'RSSI', 'SNR', "State"]:
+                self.row1.addWidget(lbl)
+            # 2. ŘÁDEK: Základní telemetrie letu
+            elif k in ['Alt', 'V_Speed', 'H_Speed', 'Total_Speed', 'Temp', 'Pressure', 'Battery voltage']:
+                self.row2.addWidget(lbl)
+            # 3. ŘÁDEK: GPS, Cíl a Vítr
+            else:
+                self.row3.addWidget(lbl)
         
-        self.layout.addLayout(self.row1); self.layout.addLayout(self.row2)
+        self.layout.addLayout(self.row1); self.layout.addLayout(self.row2); self.layout.addLayout(self.row3)
 
         self.content = QtWidgets.QHBoxLayout()
         self.left_panel = QtWidgets.QVBoxLayout()
@@ -337,7 +332,12 @@ class GroundStation(QtWidgets.QMainWindow):
             ('Battery voltage', 'VOLTAGE', colors['Voltage']),
             ('H-Speed', 'H_SPEED', '#FFD700'),     # Zlatá
             ('Total Speed', 'T_SPEED', '#FFFFFF'), # Bílá
-            ('Flight Azimuth', 'AZIM_F', '#00FF00') # Zelená
+            ('Flight Azimuth', 'AZIM_F', '#00FF00'), # Zelená
+            ('Wind Speed', 'W_SPD', '#00FFFF'),
+            ('Wind Azimuth', 'W_AZIM', '#FFA500'),
+            ('Target Distance', 'TARGET_DIST', '#9370DB'),
+            ('V-Win', 'V_WIN', '#FF00FF'),
+            ('A-Win', 'A_WIN', '#FFFFFF')
         ]
         
         start_visible_keys = {'U_LAT', 'DIST', 'V_SPEED', 'ALT', 'DRIFT', 'CAN_DELTA', 'UPKEEP'}
@@ -442,7 +442,7 @@ class GroundStation(QtWidgets.QMainWindow):
             
             curr_m = d.get('MILLIS', 0)
             
-            for k in ['TEMP', 'ALT', 'LAT', 'LON', 'RSSI', 'SNR', 'PRESS', 'MILLIS', 'V_SPEED', "VOLTAGE"]:
+            for k in ['TEMP', 'ALT', 'LAT', 'LON', 'RSSI', 'SNR', 'PRESS', 'MILLIS', 'V_SPEED', "VOLTAGE", 'TARGET_DIST', 'TARGET_AZIM', 'W_SPD', 'W_AZIM', 'V_WIN']:
                 self.data[k].append(d.get(k, 0.0))
             self.data['UPKEEP'].append(curr_m)
             
@@ -454,15 +454,18 @@ class GroundStation(QtWidgets.QMainWindow):
             
             drift = int((real_ms - self.sync_offset) - curr_m)
             self.data['DRIFT'].append(drift)
-            
-            dist = round(haversine((d.get('LAT', 0), d.get('LON', 0)), (target_lat, target_lon))*1000, 1) if d.get('LAT') else 0.0
-            self.data['DIST'].append(dist)
 
             self.data['STATE'].append(d.get('STATE', self.data['STATE'][-1] if self.data['STATE'] else 0))
             self.update_state_label(d.get('STATE', 0))
             
             self.last_millis = curr_m
             last_packet = d
+
+            new_vals = {'Wind_Spd': f"{self.data.get('W_SPD', [0])[-1]:.1f} m/s", 'Wind_Azim': f"{self.data.get('W_AZIM', [0])[-1]:.0f}°", 'V_Win': f"{self.data.get('V_WIN', [0])[-1]:.1f} m/s"}
+            for k, v in new_vals.items():
+                if k in self.lbls:
+                    self.lbls[k].setText(f"{k}: {v}")
+
 
     
 
@@ -480,32 +483,37 @@ class GroundStation(QtWidgets.QMainWindow):
                 self.map_w.update_position(last_packet['LAT'], last_packet['LON'])
 
             if len(self.data['LAT']) >= 2:
-                # Načtení dat z historie (poslední a předposlední)
+                # Načtení dat pro výpočet směru LETU a horizontální RYCHLOSTI
                 curr_lat, curr_lon = self.data['LAT'][-1], self.data['LON'][-1]
                 prev_lat, prev_lon = self.data['LAT'][-2], self.data['LON'][-2]
-                prev_m = self.data['MILLIS'][-2] # curr_m už máme nahoře
+                curr_m = self.data['MILLIS'][-1]
+                prev_m = self.data['MILLIS'][-2]
 
-                # 1. Výpočet azimutu k cíli (z aktuální polohy k target_lat z CONFIGu)
-                azim_target = calculate_bearing(curr_lat, curr_lon, target_lat, target_lon)
-                
-                # 2. Výpočet azimutu směru letu (změna polohy v čase)
+                # 1. Směr LETU (stále počítáme v GTS, protože to CanSat obvykle neposílá)
                 azim_flight = calculate_bearing(prev_lat, prev_lon, curr_lat, curr_lon)
                 
-                # 3. Výpočet horizontální rychlosti
+                # 2. Rychlosti (stále počítáme v GTS)
                 v_h = calculate_h_speed(prev_lat, prev_lon, curr_lat, curr_lon, prev_m, curr_m)
-                
-                # 4. Celková rychlost (v_v posílá Arduino jako 'V_SPEED')
                 v_v = self.data['V_SPEED'][-1]
                 v_total = math.sqrt(v_h**2 + v_v**2)
 
-                # 5. Aktualizace nových štítků (labels)
-                self.lbls['Azim_Target'].setText(f"Target Brg: {azim_target:.1f}°")
+                # 3. Získání hodnot, které POSLAL CANSAT
+                # Pokud v paketu nejsou, použijeme 0
+                dist_from_cansat = last_packet.get('TARGET_DIST', 0.0)
+                azim_target_from_cansat = last_packet.get('TARGET_AZIM', 0.0)
+
+                # 4. Aktualizace UI (labels)
+                self.lbls['Azim_Target'].setText(f"Target Brg (CS): {azim_target_from_cansat:.1f}°")
                 self.lbls['Azim_Flight'].setText(f"Flight Dir: {azim_flight:.1f}°")
                 self.lbls['H_Speed'].setText(f"H-Speed: {v_h:.2f} m/s")
                 self.lbls['Total_Speed'].setText(f"Total Speed: {v_total:.2f} m/s")
+                self.lbls['Dist'].setText(f"Dist (CS): {dist_from_cansat} m")
+
+                # Uložení do historie pro grafy
                 self.data['H_SPEED'].append(v_h)
                 self.data['T_SPEED'].append(v_total)
                 self.data['AZIM_F'].append(azim_flight)
+                self.data['DIST'].append(dist_from_cansat) # Přepisujeme vypočtenou hodnotu tou z CanSatu
 
         if not self.data['ALT']: return
         for k in self.data: self.data[k] = self.data[k][-300:]
